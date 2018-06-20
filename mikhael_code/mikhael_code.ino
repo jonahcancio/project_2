@@ -10,14 +10,18 @@
 
 //GLOBAL VARIABLES
 bool hasStarted;
+bool cycle;
+bool start;
+bool pendingInput;
 long timeLastClockPress;
 int lastClockRead;
 long timeLastStartPress;
 int lastStartRead;
 int f;
+char fromServer[50];
+
 
 void setup() {
-
   //PIN MODES
   int i;
   pinMode(startSwitch, INPUT);
@@ -34,18 +38,49 @@ void setup() {
   //SERIAL BEGIN
   Serial.begin(9600);
 
-  char* p = "00fff";
-  f = (int)strtol(p, 0, 16);
+  //BOOLEANS
+  hasStarted = false;
+  cycle = false;
+  pendingInput = true;
+//  f = (int)strtol(p, 0, 16);
+
+  //OTHER SETUP
+  memset(fromServer, 0, 50);
+  Serial.setTimeout(10000);
 }
 
 void loop() {
+  int i;
   if(!hasStarted){
-    if(digitalRead(startSwitch) == HIGH){
-      debounceStartPoll();
-    }
+//    if(digitalRead(startSwitch) == HIGH){
+//      debounceStartPoll();
+//    }
+    hasStarted = true;
+    Serial.print("START");
+    Serial.write(0);
   }else{
-    digitalWrite(readyLED, HIGH);
-    Serial.println(f);
+    if(pendingInput){      
+      if(Serial.available()>0){
+//        memset(fromServer,0,50);        
+//        fromServer[i] = Serial.readString();
+//        Serial.print("spaghetti");
+//        if(fromServer[i] == '0'){
+//          pendingInput = false;
+//        }
+//        i++;       
+      }
+    }else{
+      Serial.println(fromServer);
+      pendingInput = true;
+      i = 0;
+    }
+    
+//    if(cycle = true){
+//      digitalWrite(readyLED, HIGH);
+//      Serial.println(f);
+//      cycle = false;
+//    }
+    
   }
 }
 
@@ -77,7 +112,8 @@ void debounceStartPoll(){
   }
   if(millis()-timeLastStartPress > threshold && startRead == HIGH){
     hasStarted = true;
-    Serial.print("START\0");
+    Serial.print("START");
+    Serial.write(0);
   }  
   lastStartRead = startRead;
 }
