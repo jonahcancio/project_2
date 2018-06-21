@@ -1,7 +1,6 @@
 //SIZE DEFINITIONS
 #define MAX_STRLEN 50
 #define MAX_SUBLEN 9
-#define TERMINATOR '\n'
 //PIN DEFINITIONS
 #define startSwitch 4
 #define clockSwitch 5
@@ -20,15 +19,12 @@ bool isPendingInput;
 //Debouncing Hooks
 long timeLastClockPress;
 int lastClockRead;
-int clockState;
-int lastClockState;
 long timeLastStartPress;
 int lastStartRead;
 
-
 //string variables from server
-char stringFromServer[MAX_STRLEN];
-char stringToServer[MAX_STRLEN];
+char fullStringFromServer[MAX_STRLEN];
+char fullStringToServer[MAX_STRLEN];
 
 char pFromServer[MAX_SUBLEN];
 char iFromServer[MAX_SUBLEN];
@@ -73,8 +69,9 @@ void setup() {
   isPendingInput = true;
 
   //OTHER SETUP
-  memset(stringFromServer, 0, MAX_STRLEN);
-  memset(stringToServer, 0, MAX_STRLEN);  
+  memset(fullStringFromServer, 0, MAX_STRLEN);
+  memset(fullStringToServer, 0, MAX_STRLEN);
+  
 }
 
 void loop() {
@@ -83,19 +80,21 @@ void loop() {
 //  debounceStartPoll();
     hasStartRequested = true;
     Serial.print("START");
-    Serial.write(TERMINATOR);
+    Serial.write(0);
   }else if(!hasStartCommenced){
     if(Serial.available()){
-      Serial.readStringUntil(0).toCharArray(pFromServer, MAX_SUBLEN);
+      Serial.readStringUntil(0).toCharArray(fullStringFromServer, MAX_STRLEN);
+      strcpy(pFromServer, fullStringFromServer);
       initToServerVars();
-      printToServerVars();
+      sprintf(fullStringToServer, "%08x %0")
+      hasStartCommenced = true;
     }
   }else{
   }
 }
 
 void initToServerVars(){
-  pNewPcInput = (int)strtol(pFromServer, NULL, 16) + 4;
+  pNewPcInput = 0;
   aReadReg1Input = 0;
   bReadReg2Input = 0;
   cWriteRegInput = 0;
@@ -107,35 +106,6 @@ void initToServerVars(){
   iMemWrite = 0; 
 }
 
-void printToServerVars(){
-    sprintf(stringToServer, "%08x ", pNewPcInput);
-    Serial.print(stringToServer);
-    print5BitBinary(aReadReg1Input);
-    print5BitBinary(bReadReg2Input);
-    print5BitBinary(cWriteRegInput);
-    sprintf(stringToServer, "%08x %1d %08x %08x %1d %1d",
-      dWriteDataReg, eRegWrite, fAddressMem, gWriteDataMem, hMemRead, iMemWrite);
-    Serial.print(stringToServer);
-    Serial.write(TERMINATOR);
-}
-
-void print5BitBinary(int num){
-  int mult = 1;
-  int bcd = 0;
-  int i;
-  for(i = 0; i < 5; i++){
-    bcd += (num%2)*mult;
-    num /= 2;
-    mult *= 10;
-  }
-  char output[7];
-  sprintf(output, "%05d ", bcd);
-  Serial.print(output);
-}
-
-void updateToServerVars(){
-  
-}
 
 void outputBCD(int num, int pin0){
   int i;
@@ -146,23 +116,20 @@ void outputBCD(int num, int pin0){
 }
 
 void debounceClockPoll(){
-  int threshold = 300;
+  int threshold = 30;
   int clockRead = digitalRead(clockSwitch);
-  if(clockRead != clockState){
+  if(clockRead == HIGH && lastClockRead == LOW){
     timeLastClockPress = millis();
   }
-  if(millis()-timeLastClockPress > threshold && clockRead != clockState){
-    clockState = !clockState;
+  if(millis()-timeLastClockPress > threshold && clockRead == HIGH){
+    //do action
   }  
-  if(clockState == HIGH and lastClockState == LOW){
-  }
-  
-  lastClockState = clockState;
+  lastClockRead = clockRead;
 }
 
 void debounceStartPoll(){
   int threshold = 30;
-  int startRead = digitalRead(startSwitch);
+  int startRead = digitalRead(clockSwitch);
   if(startRead == HIGH && lastStartRead == LOW){
     timeLastStartPress = millis();
   }
