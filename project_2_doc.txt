@@ -1,0 +1,30 @@
+
+Sent by the Arduino:
+PPPPPPPP AAAAA BBBBB CCCCC DDDDDDDD E FFFFFFFF GGGGGGGG H I\0
+
+P = 32-bit value in hex, input to PC register
+
+A = 5-bit value corresponding to the Read Register 1 input of the register file
+B = 5-bit value corresponding to the Read Register 2 input of the register file
+
+C = 5-bit value corresponding to the Write Register input of the register file
+D = 32-bit value in hex, Write Data input of the register file
+E = 1-bit value corresponding to the Write Data input of the register file
+
+F = 32-bit value in hex corresponding to the Address input of the data memory
+G = 32-bit value in hex corresponding to the Write Data input of the data memory
+
+H = 1-bit corresponding to the MemRead input of the data memory
+I = 1-bit value corresponding to the MemWrite input of the data memory
+
+Sent by the server:
+IIIIIIII AAAAAAAA BBBBBBBB CCCCCCCC\0
+
+I = 32-bit value in hex corresponding to the Instruction OUTPUT of the instruction memory
+
+A = 32-bit value in hex corresponding to the Read Data 1 OUTPUT of the register file
+B = 32-bit value in hex corresponding to the Read Data 2 OUTPUT of the register file
+
+C = 32-bit value in hex corresponding to the Read Data OUTPUT of the data memory
+
+I
