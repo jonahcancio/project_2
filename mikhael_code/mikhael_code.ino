@@ -173,7 +173,7 @@ void outputBCD(int num, int pin0){
 //  lastClockState = clockState;
 //}
 
-void serverOutputDecode(char stringFromServer[MAX_STRLEN]){//Decodes instructions sent by the server
+void serverOutputSegregate(char stringFromServer[MAX_STRLEN]){//Segregate instructions sent by the server
   char *token;
 
   token = strtok(stringFromServer, " ");
@@ -188,6 +188,21 @@ void serverOutputDecode(char stringFromServer[MAX_STRLEN]){//Decodes instruction
   token = strtok(NULL, " ");
   strcpy(cFromServer,token);//CCCCCCCC
 }
+
+void  serverOutputDecode(){
+  iNewInstruction = strtol(iFromServer, NULL, 16);
+  aReadDataReg1Output = strtol(aFromServer, NULL, 16);
+  bReadDataReg2Output = strtol(bFromServer, NULL, 16);
+  cReadDataMemOutput = strtol(cFromServer, NULL, 16);
+}
+
+int extractOpcode(){
+  long opcode;
+  opcode = iNewInstruction&4227858432;
+  opcode = opcode>>25;
+  return opcode;
+}
+
 //
 //void loop() {
 //  int i;
