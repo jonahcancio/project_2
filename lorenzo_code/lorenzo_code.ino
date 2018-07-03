@@ -51,3 +51,52 @@ void identifyInstructionType(long opcode){//Identify the instruction type based 
     }
   }
 }
+
+void Execute(){//executes R-type instructions
+  long s;
+  long t;
+  long S;
+  long T;
+  long D;
+  long imm;
+  long address;
+ // long mem;
+  
+  s = aReadDataReg1Output;
+  t = bReadDataReg2Output;
+ // mem = cReadDataMemOutput
+ 
+  S = iNewInstruction&65011712;//rs
+  T = iNewInstruction&2031616;//rt
+  D = iNewInstruction&63488;//rd
+  imm = iNewInstruction&65535;//immediate 
+  address = iNewInstruction&67108863;//address
+  
+  if(strcmp(operation, "add") == 0){
+    aluResultEx = s + t;
+    //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
+  }else if(strcmp(operation, "sub") == 0){
+    aluResultEx = s - t;
+  }else if(strcmp(operation, "and") == 0){
+    aluResultEx = s&t;
+  }else if(strcmp(operation, "or") == 0){
+    aluResultEx = s or t;
+  }else if(strcmp(operation, "slt") == 0){
+    if(s < t){
+      aluResultEx = 1;
+    }else{
+      aluResultEx = 0;
+    }
+  }else if(strcmp(operation, "addi") == 0){
+    aluResultEx = s + imm;
+    //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
+  }else if(strcmp(operation, "lw") == 0){
+    
+  }else if(strcmp(operation, "sw") == 0){
+    
+  }else if(strcmp(operation, "beq") == 0){
+    
+  }else if(strcmp(operation, "j") == 0){
+  
+  }
+}
