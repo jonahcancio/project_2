@@ -55,6 +55,12 @@ int cReadDataMemOutput;
 //pipeline instruction queue
 int iPipelineQueue[5];
 
+//processed variables
+char operation[4];
+int aluResultEx;
+int aluResultMem;
+int writeBackResult;
+
 void setup() {
   //PIN MODES
   int i;
@@ -124,9 +130,6 @@ void initVars(){
   memset(iPipelineQueue, 0, 5);
 }
 
-void enqueue(){
-}
-
 void printToServerVars(){
     sprintf(stringToServer, "%08x ", pNewPcInput);
     Serial.print(stringToServer);
@@ -151,10 +154,6 @@ void print5BitBinary(int num){
   char output[7];
   sprintf(output, "%05d ", bcd);
   Serial.print(output);
-}
-
-void updateToServerVars(){
-  
 }
 
 void outputBCD(int num, int pin0){
@@ -182,7 +181,7 @@ void serverOutputSegregate(char stringFromServer[MAX_STRLEN]){//Segregate instru
   strcpy(cFromServer,token);//CCCCCCCC
 }
 
-void  serverOutputDecode(){
+void serverOutputDecode(){
   iNewInstruction = strtol(iFromServer, NULL, 16);
   aReadDataReg1Output = strtol(aFromServer, NULL, 16);
   bReadDataReg2Output = strtol(bFromServer, NULL, 16);
@@ -194,6 +193,39 @@ int extractOpcode(){
   opcode = iNewInstruction&4227858432;
   opcode = opcode>>25;
   return opcode;
+}
+
+void enqueuePipeline(){
+  int j;
+  for(j = 4; j > 1; j--){
+    iPipelineQueue[j] = iPipelineQueue[j-1];
+  }
+  iPipelineQueue[1] = iNewInstruction;
+  aluResultMem = aluResultEx;
+}
+
+void RType(long instruction){}
+
+
+void pipelineClockCycle(){
+  enqueuePipeline();
+  aReadReg1Input = (iPipelineQueue[1]>>21)&0x1f;
+  bReadReg2Input = (iPipelineQueue[1]>>16)&0x1f;
+  cWriteRegInput = (iPipelineQueue[1]>>11)&0x1f;
+  RType(iPipelineQueue[4]);
+  if(strcmp(operation, "lw")==0){
+    dWriteDataReg = cReadDataMemOutput;
+  }else{
+    dWriteDataReg = aluResultMem;
+  }
+  eRegWrite = strcmp(operation, "j")!=0 
+    && strcmp(operation, "beq")!=0
+    && strcmp(operation, "sw")!=0;
+  fAddressMem = aluResultEx;
+  gWriteDataMem = iPipelineQueue[4]
+  hMemRead = strcmp(operation, "lw") == 0;
+  iMemWrite = strcmp(operation, "sw") == 0;
+  
 }
 
 long timeLastStartPress;
