@@ -1,4 +1,5 @@
 
+Variables:
 Sent by the Arduino:
 PPPPPPPP AAAAA BBBBB CCCCC DDDDDDDD E FFFFFFFF GGGGGGGG H I\0
 
@@ -27,4 +28,19 @@ B = 32-bit value in hex corresponding to the Read Data 2 OUTPUT of the register 
 
 C = 32-bit value in hex corresponding to the Read Data OUTPUT of the data memory
 
-I
+Data Hazards:
+-EX-detected forwarding-resolved hazards
+	-later instruction is in the EX stage
+	-assuming instruction B comes after A, the destination of A must be equal to the source of B
+	-RD as the destination:
+		- add, sub, and, or, slt
+	-RT as the destination:
+		-addi, lw
+	-RS as a data source:
+		-add, sub, and, or, slt
+		-addi, lw
+	-RT as a data source:
+		-add, sub, and, or, slt
+	-When overlapping data hazards coexist, Case 1 is prioritized:
+		-Case 1: Instructions of hazard pair are next to each other
+		-Case 2: Instructions of hazard pair have one instruction between them
