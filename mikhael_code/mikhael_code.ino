@@ -53,6 +53,12 @@ int aReadDataReg1Output;
 int bReadDataReg2Output;
 int cReadDataMemOutput;
 
+//pipeline instruction queue
+int iPipeLineQueue[5];
+
+//Others
+char operation[4];
+
 void setup() {
   //PIN MODES
   int i;
@@ -91,8 +97,7 @@ void loop() {
       Serial.readStringUntil(0).toCharArray(stringFromServer, MAX_STRLEN);
       hasStartCommenced = true;
       strcpy(pFromServer, stringFromServer);
-      initToServerVars();
-      initFromServerVars();
+      initVars();
       printToServerVars();
     }
   }else{
@@ -100,8 +105,9 @@ void loop() {
   }
 }
 
-void initToServerVars(){
-  pNewPcInput = (int)strtol(pFromServer, NULL, 16) + 4;
+void initVars(){
+  //init to server vars
+  pNewPcInput = strtoul(stringFromServer, NULL, 16);
   aReadReg1Input = 0;
   bReadReg2Input = 0;
   cWriteRegInput = 0;
@@ -111,13 +117,21 @@ void initToServerVars(){
   gWriteDataMem = 0;
   hMemRead = 0;
   iMemWrite = 0; 
+
+  //init from server vars
+  iNewInstruction = 0;
+  aReadDataReg1Output = 0;
+  bReadDataReg2Output = 0;
+  cReadDataMemOutput = 0;
+  memset(iPipeLineQueue, 0, 5);
 }
 
-void initFromServerVars(){
- iNewInstruction = 0;
- aReadDataReg1Output = 0;
- bReadDataReg2Output = 0;
- cReadDataMemOutput = 0;
+void enqueue(){
+  int j;
+  for(j=4; j>0; j--){
+    iPipeLineQueue[j] = iPipeLineQueue[j-1];
+  }
+  iPipeLineQueue[0] = iNewInstruction;
 }
 
 void printToServerVars(){
@@ -196,11 +210,79 @@ void  serverOutputDecode(){
   cReadDataMemOutput = strtol(cFromServer, NULL, 16);
 }
 
-int extractOpcode(){
+long extractOpcode(){
   long opcode;
   opcode = iNewInstruction&4227858432;
   opcode = opcode>>25;
   return opcode;
+}
+
+int identifyInstructionType(long opcode){//Identify the instruction type based on the given opcode
+  if(opcode == 0){//0 is R-type
+    return 0;
+  }else if(opcode == 2){//1 is J-type
+    return 1;
+  }else{//2 is I-type
+    return 2;
+  }
+}
+
+void RTypeIdentify(long instruction){//identifies the specific operation
+  long temp;
+
+//  s = instruction&65011712;
+//  s = s>>21;
+//
+//  t = instruction&2031616;
+//  t = t>>16;
+//
+//  d = instruction&63488;
+//  d = d>>11;
+  
+  temp = instruction&2047;
+  switch(temp){//identify operation
+    case 32:{
+      strcpy(operation, "add");
+      break;
+    }
+    case 34:{
+      strcpy(operation, "sub");
+      break;
+    }case 36:{
+      strcpy(operation, "and");
+      break;
+    }case 37:{
+      strcpy(operation, "or");
+      break;
+    }case 42:{
+      strcpy(operation, "slt");
+      break;
+    }
+  }
+}
+
+void RTypeExecute(){//executes R-type instructions
+  long s;
+  long t;
+  
+  s = aReadDataReg1Output;
+  t = bReadDataReg2Output;
+  
+  if(strcmp(operation, "add") == 0){
+    aluResultEx = s + t;
+  }else if(strcmp(operation, "sub") == 0){
+    aluResultEx = s - t;
+  }else if(strcmp(operation, "and") == 0){
+    aluResultEx = s&t;
+  }else if(strcmp(operation, "or") == 0){
+    aluResultEx = s or t;
+  }else if(strcmp(operation, "slt") == 0){
+    if(s < t){
+      aluResultEx = 1;
+    }else{
+      aluResultEx = 0;
+    }
+  }
 }
 
 //
