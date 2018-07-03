@@ -2,6 +2,7 @@
 #define MAX_STRLEN 50
 #define MAX_SUBLEN 9
 #define TERMINATOR '\n'
+#define DEBOUNCE_THRESHOLD 30
 //PIN DEFINITIONS
 #define startSwitch 4
 #define clockSwitch 5
@@ -14,18 +15,15 @@
 //Loop Boolean Hooks
 bool hasStartRequested;
 bool hasStartCommenced;
-bool isPendingInput;
-
-//Debouncing Hooks
-long timeLastClockPress;
-int lastClockRead;
+bool hasServerInput;
+bool hasClockCycle;
 
 
-//string variables from server
+//string variables for input and output to server
 char stringFromServer[MAX_STRLEN];
 char stringToServer[MAX_STRLEN];
 
-//num variables to server
+//variables inputted to server
 long pNewPcInput;
 int aReadReg1Input;
 int bReadReg2Input;
@@ -37,7 +35,7 @@ long gWriteDataMem;
 int hMemRead;
 int iMemWrite; 
 
-//variables from server
+//variables outputted by server
 long iNewInstruction;
 long aReadDataReg1Output;
 long bReadDataReg2Output;
@@ -46,10 +44,17 @@ long cReadDataMemOutput;
 //pipeline arrays
 long iPipelineQueue[5];
 long aluResultQueue[5];
-long writeBackResult;
+long pcBranchQueue[5];
 
 //mutable strings for function returns
-char iString[MAX_SUBLEN] ;
+char iString[MAX_SUBLEN];
+
+//hazard and exception check;
+int controlHazard;
+int dataHazard;
+int invalidInstruction;
+int arithmeticOverflow;
+
 
 void setup() {
   //PIN MODES
@@ -71,50 +76,16 @@ void setup() {
   
   //BOOLEANS
   hasStartRequested = false;
-  hasStartCommenced = false;  isPendingInput = true;
+  hasStartCommenced = false;  
+  hasServerInput = false;
+  hasClockCycle = false;
 
   //OTHER SETUP
   memset(stringFromServer, 0, MAX_STRLEN);
   memset(stringToServer, 0 , MAX_STRLEN);
-}
 
-void loop() {
-  int i;
-  if(!hasStartRequested){
-    //debounceStartPoll();
-    hasStartRequested = true;
-    Serial.print("START");
-    Serial.write(TERMINATOR);
-  }else if(!hasStartCommenced){
-    if(Serial.available() > 0){
-      Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN);      
-      initVars();
-      printPipelineInput();
-      hasStartCommenced = true;
-      isPendingInput = true;
-    }
-  }else if(isPendingInput){
-    if(Serial.available() > 0){
-      instIdentify(iPipelineQueue[2]);
-      Serial.print("Instruction for ALU: ");
-      Serial.println(iString);
-      aluResultQueue[2] = aluExecute(iString);
-      Serial.print("ALU RESULT: ");
-      Serial.println(aluResultQueue[2]);
-      Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN); 
-      storeServerOutput();         
-      isPendingInput = false;
-    }
-  }else{
-    updatePipelineInput();
-    printPipelineInput();
-    isPendingInput = true;
-  }
-}
-
-void initVars(){
   //init to server vars
-  pNewPcInput = strtoul(stringFromServer, NULL, 16)+4;
+  pNewPcInput = 0;
   aReadReg1Input = 0;
   bReadReg2Input = 0;
   cWriteRegInput = 0;
@@ -132,6 +103,66 @@ void initVars(){
   cReadDataMemOutput = 0;
   memset(iPipelineQueue, 0, 5);
   memset(aluResultQueue, 0, 5);
+}
+
+void loop() {
+  int i;
+  if(!hasStartRequested){
+    //debounceStartPoll();
+    Serial.println("imagine the clock switch was pressed at this moment");    
+    Serial.print("START");
+    Serial.write(TERMINATOR);
+    hasStartRequested = true;
+  }else if(!hasStartCommenced){
+    if(Serial.available() > 0){
+      Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN);      
+      pNewPcInput = strtoul(stringFromServer, NULL, 16)+4;
+      printPipelineInput();
+      hasStartCommenced = true;
+    }
+  }else if(!hasServerInput){
+    if(Serial.available() > 0){
+      //get output of ALU
+      instIdentify(iPipelineQueue[2]);
+      aluResultQueue[2] = aluExecute(iString);
+
+      //get output of instruction mem, register file, data mem
+      Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN); 
+      storeServerOutput();         
+
+      printPipelineQueues();
+      
+      hasServerInput = true;
+    }
+  }else if(!hasClockCycle){
+    //debounceClockPoll();
+    Serial.println("imagine the clock switch was pressed at this moment");
+    hasClockCycle = true;
+  }else{
+    updatePipelineInput();
+    printPipelineInput();
+
+    hasServerInput = false;
+    hasClockCycle = false;
+  }
+}
+
+
+//print it pipeline queue for debugging 
+void printPipelineQueues(){
+  Serial.println("\n<< DEBUGGING PART - START  >>");
+  char output[MAX_STRLEN];
+  sprintf(output, "PC-next at IF: %08lx", pNewPcInput);
+  Serial.println(output);
+  sprintf(output, "Inst at ID: %08lx", iPipelineQueue[1]);
+  Serial.println(output);
+  sprintf(output, "Inst at EX: %08lx\tALU at EX: %08lx", iPipelineQueue[2], aluResultQueue[2]);
+  Serial.println(output);
+  sprintf(output, "Inst at MEM: %08lx\tALU at MEM: %08lx", iPipelineQueue[3], aluResultQueue[3]);
+  Serial.println(output);
+  sprintf(output, "Inst at WB: %08lx\tALU at WB: %08lx", iPipelineQueue[4], aluResultQueue[4]);
+  Serial.println(output);
+  Serial.println("<< DEBUGGING PART - END  >>\n");
 }
 
 //prints num into a binary string of length 5
@@ -175,13 +206,10 @@ void storeServerOutput(){
   cReadDataMemOutput = strtoul(token, NULL, 16);//CCCCCCCC
 }
 
-
-
-//test with 01294820 00000007 00000003 00000005
+//test with 01294820 000000a0 0000000f 00000005
 
 //Call every clock cycle to move pipeline and update pipeline variables to input to server
-void updatePipelineInput(){
-  char temp[MAX_SUBLEN];  
+void updatePipelineInput(){  
   movePipelineQueue();
   
   pNewPcInput += 4;
@@ -191,22 +219,18 @@ void updatePipelineInput(){
   cWriteRegInput = (iPipelineQueue[1]>>11)&0x1f;
 
   instIdentify(iPipelineQueue[4]);
-  Serial.print("instruction at WB: ");
-  Serial.println(iString);
-  if(strcmp(temp, "lw")==0 || strcmp(temp, "nop")==0){
+  if(strcmp(iString, "lw")==0 || strcmp(iString, "nop")==0){
     dWriteDataReg = cReadDataMemOutput;
   }else{
     dWriteDataReg = aluResultQueue[4];
   }
-  eRegWrite = strcmp(temp, "j")!=0 && strcmp(temp, "beq")!=0 && strcmp(temp, "sw")!=0;
+  eRegWrite = strcmp(iString, "j")!=0 && strcmp(iString, "beq")!=0 && strcmp(iString, "sw")!=0;
   fAddressMem = aluResultQueue[3];
   gWriteDataMem = iPipelineQueue[4]&0xffff;
 
   instIdentify(iPipelineQueue[3]);
-  Serial.print("instruction at MEM: ");
-  Serial.println(iString);
-  hMemRead = strcmp(temp, "lw") == 0;
-  iMemWrite = strcmp(temp, "sw") == 0;  
+  hMemRead = strcmp(iString, "lw") == 0;
+  iMemWrite = strcmp(iString, "sw") == 0;  
 }
 
 //move each instruction in the pipeline one stage to the right
@@ -256,17 +280,15 @@ void instIdentify(long iCode){//identifies the specific operation
   }
 }
 
-long aluExecute(char *iString){//executes R-type instructions
+//executes R-type instructions
+long aluExecute(char *iString){
   long rs;
   long rt;
   long rd;
   
   rs = aReadDataReg1Output;
   rt = bReadDataReg2Output;
-  Serial.print("rs: ");
-  Serial.print(rs);
-  Serial.print("    rt: ");
-  Serial.println(rt);
+  
   if(strcmp(iString, "add") == 0){
     rd = rs + rt;
   }else if(strcmp(iString, "sub") == 0){
@@ -286,23 +308,37 @@ long aluExecute(char *iString){//executes R-type instructions
 }
 
 
-long timeLastStartPress;
-bool isDebouncing;
+long timeLastClockToggle;
+bool isClockDebouncing;
+int currClockState;
+int prevClockState; 
 
-void debounceStartPoll(){
-  int threshold = 30;
-  if(digitalRead(startSwitch) == HIGH && !isDebouncing){
-    timeLastStartPress = millis();
-    isDebouncing = true;
+void debounceClockPoll(){
+  //if check if switch has been toggled and start debounce timer if haven't debounced yet
+  if(digitalRead(clockSwitch) != currClockState && !isClockDebouncing){
+    timeLastClockToggle = millis();
+    isClockDebouncing = true;
   }
-  if(digitalRead(startSwitch) == LOW && isDebouncing){
-    isDebouncing = false;
+
+  //restart debounce timer if fluctuation lasted too short
+  if(digitalRead(clockSwitch) == currClockState){
+    isClockDebouncing = false;
   }
-  if(millis() - timeLastStartPress > threshold && isDebouncing){
-    hasStartRequested = true;
-    Serial.print("START");
-    Serial.write(0);
-    digitalWrite(readyLED, HIGH);
+
+  //check if debounce DEBOUNCE_THRESHOLD has been reached during debouncing
+  if(millis() - timeLastClockToggle > DEBOUNCE_THRESHOLD && isClockDebouncing){
+    currClockState = !currClockState;
+    isClockDebouncing = false;
+  }
+
+  //check for rising edge
+  if(currClockState == HIGH && prevClockState == LOW){
+     Serial.println("Debounced rising detected");
+  }
+
+  //check for falling edge
+  if(currClockState == LOW && prevClockState == HIGH){
+     Serial.println("Debounced falling detected");
   }
 }
 
