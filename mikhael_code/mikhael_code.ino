@@ -218,8 +218,28 @@ long extractOpcode(){
 }
 
 int identifyInstructionType(long opcode){//Identify the instruction type based on the given opcode
+  long func;
+  func = instruction&2047;
   if(opcode == 0){//0 is R-type
-    return 0;
+    switch(func){//identify operation
+      case 32:{
+        strcpy(operation, "add");
+        break;
+      }
+      case 34:{
+        strcpy(operation, "sub");
+        break;
+      }case 36:{
+        strcpy(operation, "and");
+        break;
+      }case 37:{
+        strcpy(operation, "or");
+        break;
+      }case 42:{
+        strcpy(operation, "slt");
+        break;
+      }
+    }
   }else if(opcode == 2){//1 is J-type
     return 1;
   }else{//2 is I-type
@@ -227,41 +247,7 @@ int identifyInstructionType(long opcode){//Identify the instruction type based o
   }
 }
 
-void RTypeIdentify(long instruction){//identifies the specific operation
-  long temp;
-
-//  s = instruction&65011712;
-//  s = s>>21;
-//
-//  t = instruction&2031616;
-//  t = t>>16;
-//
-//  d = instruction&63488;
-//  d = d>>11;
-  
-  temp = instruction&2047;
-  switch(temp){//identify operation
-    case 32:{
-      strcpy(operation, "add");
-      break;
-    }
-    case 34:{
-      strcpy(operation, "sub");
-      break;
-    }case 36:{
-      strcpy(operation, "and");
-      break;
-    }case 37:{
-      strcpy(operation, "or");
-      break;
-    }case 42:{
-      strcpy(operation, "slt");
-      break;
-    }
-  }
-}
-
-void RTypeExecute(){//executes R-type instructions
+void Execute(){//executes R-type instructions
   long s;
   long t;
   
