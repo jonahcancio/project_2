@@ -15,21 +15,19 @@
 bool hasStartRequested;
 bool hasStartCommenced;
 bool cycle;
-bool isPendingInput;
+bool start;
+bool pendingInput;
 
 //Debouncing Hooks
 long timeLastClockPress;
 int lastClockRead;
-int clockState;
-int lastClockState;
-long timeLastStartPress;
-int lastStartRead;
 
 
 //string variables from server
 char stringFromServer[MAX_STRLEN];
 char stringToServer[MAX_STRLEN];
 
+//separate strings from server
 char pFromServer[MAX_SUBLEN];
 char iFromServer[MAX_SUBLEN];
 char aFromServer[MAX_SUBLEN];
@@ -37,7 +35,7 @@ char bFromServer[MAX_SUBLEN];
 char cFromServer[MAX_SUBLEN];
 
 //num variables to server
-int pNewPcInput;
+long pNewPcInput;
 int aReadReg1Input;
 int bReadReg2Input;
 int cWriteRegInput;
@@ -47,6 +45,15 @@ int fAddressMem;
 int gWriteDataMem;
 int hMemRead;
 int iMemWrite; 
+
+//variables from server
+int iNewInstruction;
+int aReadDataReg1Output;
+int bReadDataReg2Output;
+int cReadDataMemOutput;
+
+//pipeline instruction queue
+int iPipelineQueue[5];
 
 void setup() {
   //PIN MODES
@@ -65,37 +72,40 @@ void setup() {
   //SERIAL BEGIN
   Serial.begin(9600);
   Serial.setTimeout(200);
-
+  
   //BOOLEANS
   hasStartRequested = false;
   hasStartCommenced = false;
   cycle = false;
-  isPendingInput = true;
+  pendingInput = true;
 
   //OTHER SETUP
   memset(stringFromServer, 0, MAX_STRLEN);
-  memset(stringToServer, 0, MAX_STRLEN);  
+  memset(stringToServer, 0 , MAX_STRLEN);
 }
 
 void loop() {
   int i;
   if(!hasStartRequested){
-//  debounceStartPoll();
+    //debounceStartPoll();
     hasStartRequested = true;
     Serial.print("START");
-    Serial.write(TERMINATOR);
+    Serial.write(0);
   }else if(!hasStartCommenced){
-    if(Serial.available()){
-      Serial.readStringUntil(0).toCharArray(pFromServer, MAX_SUBLEN);
-      initToServerVars();
+    if(Serial.available() > 0){
+      Serial.readStringUntil(0).toCharArray(stringFromServer, MAX_STRLEN);
+      hasStartCommenced = true;
+      initVars();
       printToServerVars();
     }
   }else{
+//    debounceClockPoll();
   }
 }
 
-void initToServerVars(){
-  pNewPcInput = (int)strtol(pFromServer, NULL, 16) + 4;
+void initVars(){
+  //init to server vars
+  pNewPcInput = strtoul(stringFromServer, NULL, 16);
   aReadReg1Input = 0;
   bReadReg2Input = 0;
   cWriteRegInput = 0;
@@ -105,6 +115,16 @@ void initToServerVars(){
   gWriteDataMem = 0;
   hMemRead = 0;
   iMemWrite = 0; 
+
+  //init from server vars
+  iNewInstruction = 0;
+  aReadDataReg1Output = 0;
+  bReadDataReg2Output = 0;
+  cReadDataMemOutput = 0;
+  memset(iPipelineQueue, 0, 5);
+}
+
+void enqueue(){
 }
 
 void printToServerVars(){
@@ -145,65 +165,54 @@ void outputBCD(int num, int pin0){
   }
 }
 
-void debounceClockPoll(){
-  int threshold = 300;
-  int clockRead = digitalRead(clockSwitch);
-  if(clockRead != clockState){
-    timeLastClockPress = millis();
-  }
-  if(millis()-timeLastClockPress > threshold && clockRead != clockState){
-    clockState = !clockState;
-  }  
-  if(clockState == HIGH and lastClockState == LOW){
-  }
+
+void serverOutputSegregate(char stringFromServer[MAX_STRLEN]){//Segregate instructions sent by the server
+  char *token;
+
+  token = strtok(stringFromServer, " ");
+  strcpy(iFromServer,token);//IIIIIIII
   
-  lastClockState = clockState;
+  token = strtok(NULL, " ");
+  strcpy(aFromServer, token);//AAAAAAAA
+
+  token = strtok(NULL, " ");
+  strcpy(bFromServer,token);//BBBBBBBB
+
+  token = strtok(NULL, " ");
+  strcpy(cFromServer,token);//CCCCCCCC
 }
+
+void  serverOutputDecode(){
+  iNewInstruction = strtol(iFromServer, NULL, 16);
+  aReadDataReg1Output = strtol(aFromServer, NULL, 16);
+  bReadDataReg2Output = strtol(bFromServer, NULL, 16);
+  cReadDataMemOutput = strtol(cFromServer, NULL, 16);
+}
+
+int extractOpcode(){
+  long opcode;
+  opcode = iNewInstruction&4227858432;
+  opcode = opcode>>25;
+  return opcode;
+}
+
+long timeLastStartPress;
+bool isDebouncing;
 
 void debounceStartPoll(){
   int threshold = 30;
-  int startRead = digitalRead(startSwitch);
-  if(startRead == HIGH && lastStartRead == LOW){
+  if(digitalRead(startSwitch) == HIGH && !isDebouncing){
     timeLastStartPress = millis();
+    isDebouncing = true;
   }
-  if(millis()-timeLastStartPress > threshold && startRead == HIGH){
+  if(digitalRead(startSwitch) == LOW && isDebouncing){
+    isDebouncing = false;
+  }
+  if(millis() - timeLastStartPress > threshold && isDebouncing){
     hasStartRequested = true;
     Serial.print("START");
     Serial.write(0);
-  }  
-  lastStartRead = startRead;
+    digitalWrite(readyLED, HIGH);
+  }
 }
-
-//bool isisPendingInput;
-//char input[20];
-//char output[20];
-//
-//void setup() {
-//  Serial.begin(9600);
-//  Serial.println("STARTO");
-////  memset(input, 0, 20);
-////  memset(output, 0, 20);
-//  isisPendingInput = true;
-//  Serial.setTimeout(200);
-//}
-//
-//void loop() {
-//  if(isisPendingInput){
-//    if(Serial.available()){
-//      Serial.readStringUntil(0).toCharArray(input, 20);
-//      //parse input here
-//      isisPendingInput = false;
-//    }
-//  }else{
-//    long decimal = strtol(input, NULL, 16);
-//    Serial.println(decimal);
-//    sprintf(output, "0x%08x", decimal);
-//    Serial.println(output);
-//    //reverse-parse output here
-//    isisPendingInput = true;
-//  }
-//}
-//
-
-
 
