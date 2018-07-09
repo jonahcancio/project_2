@@ -11,7 +11,7 @@
 #define invalidExceptionLED A3
 #define arithmeticExceptionLED A4
 
-//Loop Boolean Hooks
+//Loop Boolean Hooks 
 bool hasStartRequested;
 bool hasStartCommenced;
 bool cycle;
@@ -48,10 +48,10 @@ int hMemRead;
 int iMemWrite; 
 
 //variables from server
-int iNewInstruction;
-int aReadDataReg1Output;
-int bReadDataReg2Output;
-int cReadDataMemOutput;
+long iNewInstruction;
+long aReadDataReg1Output;
+long bReadDataReg2Output;
+long cReadDataMemOutput;
 
 //pipeline instruction queue
 int iPipeLineQueue[5];
@@ -217,7 +217,7 @@ long extractOpcode(){
   return opcode;
 }
 
-int identifyInstructionType(long opcode){//Identify the instruction type based on the given opcode
+void identifyInstructionType(long opcode){//Identify the instruction type based on the given opcode
   long func;
   func = instruction&2047;
   if(opcode == 0){//0 is R-type
@@ -241,21 +241,49 @@ int identifyInstructionType(long opcode){//Identify the instruction type based o
       }
     }
   }else if(opcode == 2){//1 is J-type
-    return 1;
+    strcpy(operation, "j");
   }else{//2 is I-type
-    return 2;
+    switch(opcode){//identify operation
+      case 8:{
+        strcpy(operation, "addi");
+        break;
+      }
+      case 35:{
+        strcpy(operation, "lw");
+        break;
+      }case 43:{
+        strcpy(operation, "sw");
+        break;
+      }case 4:{
+        strcpy(operation, "beq");
+        break;
+    }
   }
 }
 
 void Execute(){//executes R-type instructions
   long s;
   long t;
+  long S;
+  long T;
+  long D;
+  long imm;
+  long address;
+ // long mem;
   
   s = aReadDataReg1Output;
   t = bReadDataReg2Output;
+ // mem = cReadDataMemOutput
+ 
+  S = iNewInstruction&65011712;//rs
+  T = iNewInstruction&2031616;//rt
+  D = iNewInstruction&63488;//rd
+  imm = iNewInstruction&65535;//immediate 
+  address = iNewInstruction&67108863;//address
   
   if(strcmp(operation, "add") == 0){
     aluResultEx = s + t;
+    //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
   }else if(strcmp(operation, "sub") == 0){
     aluResultEx = s - t;
   }else if(strcmp(operation, "and") == 0){
@@ -268,6 +296,21 @@ void Execute(){//executes R-type instructions
     }else{
       aluResultEx = 0;
     }
+  }else if(strcmp(operation, "addi") == 0){
+    return = s + imm;
+    //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
+  }else if(strcmp(operation, "lw") == 0){
+    return s + imm;
+  }else if(strcmp(operation, "sw") == 0){
+    return s + imm;
+  }else if(strcmp(operation, "beq") == 0){
+    if(s == t){
+      return 1;
+    }else{
+      return 0;
+    }
+  }else if(strcmp(operation, "j") == 0){
+     return -1;
   }
 }
 
