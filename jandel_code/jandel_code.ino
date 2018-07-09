@@ -24,7 +24,6 @@ char stringFromServer[MAX_STRLEN];
 char stringToServer[MAX_STRLEN];
 
 //variables inputted to server
-long pNewPcInput;
 int aReadReg1Input;
 int bReadReg2Input;
 int cWriteRegInput;
@@ -42,14 +41,16 @@ long bReadDataReg2Output;
 long cReadDataMemOutput;
 
 //pipeline arrays
-long iPipelineQueue[5];
-long aluResultQueue[5];
-long pcBranchQueue[5];
+long pcQueue[5];
+long insQueue[4];
+long aluQueue[3];
+
 
 //mutable strings for function returns
 char iString[MAX_SUBLEN];
 
 //hazard and exception check;
+bool toBranchOrNot;
 int controlHazard;
 int dataHazard;
 int invalidInstruction;
@@ -85,7 +86,6 @@ void setup() {
   memset(stringToServer, 0 , MAX_STRLEN);
 
   //init to server vars
-  pNewPcInput = 0;
   aReadReg1Input = 0;
   bReadReg2Input = 0;
   cWriteRegInput = 0;
@@ -101,44 +101,50 @@ void setup() {
   aReadDataReg1Output = 0;
   bReadDataReg2Output = 0;
   cReadDataMemOutput = 0;
-  memset(iPipelineQueue, 0, 5);
-  memset(aluResultQueue, 0, 5);
+  memset(insQueue, 0, 4);
+  memset(aluQueue, 0, 3);
+  memset(pcQueue, 0, 5);
 }
 
 void loop() {
   int i;
   if(!hasStartRequested){
     //debounceStartPoll();
-    Serial.println("imagine the clock switch was pressed at this moment");    
+    Serial.println("imagine the START switch was pressed at this moment");    
     Serial.print("START");
     Serial.write(TERMINATOR);
     hasStartRequested = true;
   }else if(!hasStartCommenced){
     if(Serial.available() > 0){
       Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN);      
-      pNewPcInput = strtoul(stringFromServer, NULL, 16)+4;
+      pcQueue[0] = strtoul(stringFromServer, NULL, 16);
+      
       printPipelineInput();
       hasStartCommenced = true;
     }
   }else if(!hasServerInput){
     if(Serial.available() > 0){
       //get output of ALU
-      instIdentify(iPipelineQueue[2]);
-      aluResultQueue[2] = aluExecute(iString);
+      insIdentify(insQueue[1]);
+      aluQueue[0] = aluExecute(iString);
 
       //get output of instruction mem, register file, data mem
       Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN); 
-      storeServerOutput();         
+      storeServerOutput();
 
+      //get next pC
+
+      //debugging
       printPipelineQueues();
       
       hasServerInput = true;
     }
   }else if(!hasClockCycle){
     //debounceClockPoll();
-    Serial.println("imagine the clock switch was pressed at this moment");
+    Serial.println("imagine the CLOCK switch was pressed at this moment");
     hasClockCycle = true;
   }else{
+    movePipelineQueue();
     updatePipelineInput();
     printPipelineInput();
 
@@ -152,15 +158,15 @@ void loop() {
 void printPipelineQueues(){
   Serial.println("\n<< DEBUGGING PART - START  >>");
   char output[MAX_STRLEN];
-  sprintf(output, "PC-next at IF: %08lx", pNewPcInput);
+  sprintf(output, "PC at IF: %08lx", pcQueue[0]);
   Serial.println(output);
-  sprintf(output, "Inst at ID: %08lx", iPipelineQueue[1]);
+  sprintf(output, "PC at ID: %08lx\tIns at ID: %08lx", pcQueue[1], insQueue[0]);
   Serial.println(output);
-  sprintf(output, "Inst at EX: %08lx\tALU at EX: %08lx", iPipelineQueue[2], aluResultQueue[2]);
+  sprintf(output, "PC at EX: %08lx\tInst at EX: %08lx\tALU at EX: %08lx", pcQueue[2], insQueue[1], aluQueue[0]);
   Serial.println(output);
-  sprintf(output, "Inst at MEM: %08lx\tALU at MEM: %08lx", iPipelineQueue[3], aluResultQueue[3]);
+  sprintf(output, "PC at MEM: %08lx\tInst at MEM: %08lx\tALU at MEM: %08lx", pcQueue[3], insQueue[2], aluQueue[1]);
   Serial.println(output);
-  sprintf(output, "Inst at WB: %08lx\tALU at WB: %08lx", iPipelineQueue[4], aluResultQueue[4]);
+  sprintf(output, "PC at WB: %08lx\tInst at WB: %08lx\tALU at WB: %08lx", pcQueue[4], insQueue[3], aluQueue[2]);
   Serial.println(output);
   Serial.println("<< DEBUGGING PART - END  >>\n");
 }
@@ -182,7 +188,7 @@ void print5BitBinary(int num){
 
 //prints the pipeline variables as input to server
 void printPipelineInput(){
-    sprintf(stringToServer, "%08lx ", pNewPcInput);
+    sprintf(stringToServer, "%08lx ", pcQueue[0]);
     Serial.print(stringToServer);
     print5BitBinary(aReadReg1Input);
     print5BitBinary(bReadReg2Input);
@@ -197,7 +203,7 @@ void printPipelineInput(){
 void storeServerOutput(){
   char *token;  
   token = strtok(stringFromServer, " ");
-  iNewInstruction = strtoul(token, NULL, 16);//IIIIIIII  
+  insQueue[0] = strtoul(token, NULL, 16);//IIIIIIII  
   token = strtok(NULL, " ");
   aReadDataReg1Output = strtoul(token, NULL, 16);//AAAAAAA
   token = strtok(NULL, " ");
@@ -206,29 +212,44 @@ void storeServerOutput(){
   cReadDataMemOutput = strtoul(token, NULL, 16);//CCCCCCCC
 }
 
+
+long getNextPc(){
+  long nextPc = pcQueue[0]+4;
+  insIdentify(insQueue[1]);
+  if(strcmp(iString, "j")==0 ){
+    if(aluExecute("j")==1){//determine whether to jump
+      nextPc = (insQueue[1]&&0x3ffffff)<<2;
+    }
+  }else if(strcmp(iString, "beq")==0){  
+    if(aluExecute("b")==1){//determine whether to branch
+      nextPc = pcQueue[2] + (insQueue[1]&&0xffff)<<2;
+    }
+  }
+  return nextPc;
+}
+
+
 //test with 01294820 000000a0 0000000f 00000005
 
 //Call every clock cycle to move pipeline and update pipeline variables to input to server
-void updatePipelineInput(){  
-  movePipelineQueue();
+void updatePipelineInput(){     
+  pcQueue[0] = getNextPc();
   
-  pNewPcInput += 4;
-  
-  aReadReg1Input = (iPipelineQueue[1]>>21)&0x1f;
-  bReadReg2Input = (iPipelineQueue[1]>>16)&0x1f;
-  cWriteRegInput = (iPipelineQueue[1]>>11)&0x1f;
+  aReadReg1Input = (insQueue[0]>>21)&0x1f;
+  bReadReg2Input = (insQueue[0]>>16)&0x1f;
+  cWriteRegInput = (insQueue[0]>>11)&0x1f;
 
-  instIdentify(iPipelineQueue[4]);
+  insIdentify(insQueue[3]);
   if(strcmp(iString, "lw")==0 || strcmp(iString, "nop")==0){
     dWriteDataReg = cReadDataMemOutput;
   }else{
-    dWriteDataReg = aluResultQueue[4];
+    dWriteDataReg = aluQueue[2];
   }
   eRegWrite = strcmp(iString, "j")!=0 && strcmp(iString, "beq")!=0 && strcmp(iString, "sw")!=0;
-  fAddressMem = aluResultQueue[3];
-  gWriteDataMem = iPipelineQueue[4]&0xffff;
+  fAddressMem = aluQueue[1];
+  gWriteDataMem = insQueue[3]&0xffff;
 
-  instIdentify(iPipelineQueue[3]);
+  insIdentify(insQueue[2]);
   hMemRead = strcmp(iString, "lw") == 0;
   iMemWrite = strcmp(iString, "sw") == 0;  
 }
@@ -236,17 +257,20 @@ void updatePipelineInput(){
 //move each instruction in the pipeline one stage to the right
 void movePipelineQueue(){
   int j;
-  for(j = 4; j > 1; j--){
-    iPipelineQueue[j] = iPipelineQueue[j-1];
+  for(j = 4; j > 0; j--){
+    pcQueue[j] = pcQueue[j-1];
   }
-  iPipelineQueue[1] = iNewInstruction;
   
-  for(j = 4; j > 2; j--){
-    aluResultQueue[j] = aluResultQueue[j-1];
+  for(j = 3; j > 0; j--){
+    insQueue[j] = insQueue[j-1];
+  }
+  
+  for(j = 2; j > 0; j--){
+    aluQueue[j] = aluQueue[j-1];
   }  
 }
 
-void instIdentify(long iCode){//identifies the specific operation  
+void insIdentify(long iCode){//identifies the specific operation  
   long opCode;
   long func;
   opCode = (iCode>>26)&0x3f;
