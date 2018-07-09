@@ -267,8 +267,6 @@ void storeServerOutput(){
   cReadDataMemOutput = strtoul(token, NULL, 16);//CCCCCCCC
 }
 
-
-
 long extractOpcode(){
   long opcode;
   opcode = iNewInstruction&4227858432;
