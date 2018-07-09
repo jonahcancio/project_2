@@ -87,16 +87,20 @@ void Execute(){//executes R-type instructions
     }else{
       aluResultEx = 0;
     }
-  }else if(strcmp(operation, "addi") == 0){
-    aluResultEx = s + imm;
-    //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
-  }else if(strcmp(operation, "lw") == 0){
-    
-  }else if(strcmp(operation, "sw") == 0){
-    
-  }else if(strcmp(operation, "beq") == 0){
-    
-  }else if(strcmp(operation, "j") == 0){
-  
-  }
-}
+//  }else if(strcmp(operation, "addi") == 0){
+//    return = s + imm;
+//    //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
+//  }else if(strcmp(operation, "lw") == 0){
+//    return s + imm;
+//  }else if(strcmp(operation, "sw") == 0){
+//    return s + imm;
+//  }else if(strcmp(operation, "beq") == 0){
+//    if(s == t){
+//      return 1;
+//    }else{
+//      return 0;
+//    }
+//  }else if(strcmp(operation, "j") == 0){
+//     return -1;
+//  }
+//}
