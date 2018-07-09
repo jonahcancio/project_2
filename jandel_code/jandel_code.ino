@@ -331,7 +331,6 @@ long aluExecute(char *iString){
   return rd;
 }
 
-
 long timeLastClockToggle;
 bool isClockDebouncing;
 int currClockState;
