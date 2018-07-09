@@ -78,11 +78,31 @@ void setup() {
   hasStartRequested = false;
   hasStartCommenced = false;
   hasClockCycle = false;
-  hasServerInput = true;
+  hasServerInput = false;
 
   //OTHER SETUP
   memset(stringFromServer, 0, MAX_STRLEN);
   memset(stringToServer, 0 , MAX_STRLEN);
+
+  //TO SERVER VARS
+  aReadReg1Input = 0;
+  bReadReg2Input = 0;
+  cWriteRegInput = 0;
+  dWriteDataReg = 0;
+  eRegWrite = 0;
+  fAddressMem = 0;
+  gWriteDataMem = 0;
+  hMemRead = 0;
+  iMemWrite = 0; 
+
+  //FROM SERVER VARS
+  iNewInstruction = 0;
+  aReadDataReg1Output = 0;
+  bReadDataReg2Output = 0;
+  cReadDataMemOutput = 0;
+  memset(insQueue, 0, 4);
+  memset(aluQueue, 0, 3);
+  memset(pcQueue, 0, 5);
 }
 
 void loop() {
@@ -102,9 +122,11 @@ void loop() {
       hasStartCommenced = true;
     }
   }else if(!hasServerInput){
-    if(Serial.available() > 0){
+    if(Serial.available() > 0){//get server input
       //get output of ALU
       insIdentify(insQueue[1]);
+      Serial.print("The instruction to execute is: ");
+      Serial.println(operation);
       Execute();
 
       //get output of instruction mem, register file, data mem
@@ -287,9 +309,10 @@ long getNextPc(){
   return nextPc;
 }
 
-void insIdentify(long opcode){//Identify the instruction type based on the given opcode
+void insIdentify(long instruction){//Identify the instruction type based on the given opcode
   long func;
-  func = opcode&2047;
+  long opcode = (instruction>>26)&0x3f;
+  func = instruction&0x3f;;
   if(opcode == 0){//0 is R-type
     switch(func){//identify operation
       case 32:{
@@ -308,7 +331,8 @@ void insIdentify(long opcode){//Identify the instruction type based on the given
       }case 42:{
         strcpy(operation, "slt");
         break;
-      }
+      }default:
+        strcpy(operation, "r-nop");
     }
   }else if(opcode == 2){//1 is J-type
     strcpy(operation, "j");
@@ -327,7 +351,8 @@ void insIdentify(long opcode){//Identify the instruction type based on the given
       }case 4:{
         strcpy(operation, "beq");
         break;
-      }
+      }default:
+        strcpy(operation, "i-nop");
     }
   }
 }
@@ -335,9 +360,9 @@ void insIdentify(long opcode){//Identify the instruction type based on the given
 void Execute(){//executes R-type instructions
   long s;
   long t;
-  long S;
-  long T;
-  long D;
+//  long S;
+//  long T;
+//  long D;
   long imm;
   long address;
  // long mem;
@@ -346,9 +371,9 @@ void Execute(){//executes R-type instructions
   t = bReadDataReg2Output;
  // mem = cReadDataMemOutput
  
-  S = iNewInstruction&65011712;//rs
-  T = iNewInstruction&2031616;//rt
-  D = iNewInstruction&63488;//rd
+//  S = iNewInstruction&65011712;//rs
+//  T = iNewInstruction&2031616;//rt
+//  D = iNewInstruction&63488;//rd
   imm = iNewInstruction&65535;//immediate 
   address = iNewInstruction&67108863;//address
   
@@ -360,7 +385,7 @@ void Execute(){//executes R-type instructions
   }else if(strcmp(operation, "and") == 0){
     aluQueue[0] = s&t;
   }else if(strcmp(operation, "or") == 0){
-    aluQueue[0] = s or t;
+    aluQueue[0] = s|t;
   }else if(strcmp(operation, "slt") == 0){
     if(s < t){
       aluQueue[0] = 1;
