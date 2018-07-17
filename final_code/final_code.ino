@@ -1,9 +1,12 @@
-//test with 01294820 000000a0 0000000f 00000005
+/*test with:
+    00400000
+    01294820 00000001 00000000 00000005
+*/
 //SIZE DEFINITIONS
 #define MAX_STRLEN 50
 #define MAX_SUBLEN 9
 #define TERMINATOR '\n'
-#define DEBOUNCE_THRESHOLD 30
+#define DEBOUNCE_THRESHOLD 100
 //PIN DEFINITIONS
 #define startSwitch 4
 #define clockSwitch 5
@@ -44,6 +47,7 @@ long cReadDataMemOutput;
 //pipeline arrays
 long pcQueue[5];
 long insQueue[4];
+//int hazardQueue[4];
 long aluQueue[3];
 
 
@@ -128,21 +132,23 @@ void setup() {
 void loop() {
   int i;
   if (!hasStartRequested) {
-    debounceStartPoll();
-    //Serial.println("imagine the START switch was pressed at this moment");
+    //debounceStartPoll();
+    noBreadboardStart();
   } else if (!hasStartCommenced) {
     if (Serial.available() > 0) {
       Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN);
-      pcQueue[0] = strtoul(stringFromServer, NULL, 16);
-      digitalWrite(readyLED, HIGH);
+      pcQueue[1] = strtoul(stringFromServer, NULL, 16);
+      pcQueue[0] = pcQueue[1]+4;
       printPipelineInput();
+      
+      digitalWrite(readyLED, HIGH);
       hasStartCommenced = true;
     }
   } else if (!hasServerInput) {
     if (Serial.available() > 0) { //get server input
       //get output of ALU
       insIdentify(insQueue[1]);
-      Serial.print("The instruction to execute is: ");
+      Serial.print("Finished executing ");
       Serial.println(operation);
       Execute();
 
@@ -158,8 +164,8 @@ void loop() {
       hasServerInput = true;
     }
   } else if (!hasClockCycle) {
-    debounceClockPoll();
-    //Serial.println("imagine the CLOCK switch was pressed at this moment");
+    //debounceClockPoll();
+    noBreadboardClock();
   } else if(hasClockCycle){
     digitalWrite(readyLED, LOW);
     movePipelineQueue();
@@ -252,7 +258,7 @@ void print5BitBinary(int num) {
   Serial.print(output);
 }
 
-void lastTwoPcDigits(){
+void lastTwoPcDigits(){//obtain last two PC digits of current instruction
   long pc;
   pc = pcQueue[0];
   pc = pc/4;
@@ -348,12 +354,12 @@ void storeServerOutput() {
   cReadDataMemOutput = strtoul(token, NULL, 16);//CCCCCCCC
 }
 
-long extractOpcode() {
-  long opcode;
-  opcode = iNewInstruction & 4227858432;
-  opcode = opcode >> 25;
-  return opcode;
-}
+//long extractOpcode() {
+//  long opcode;
+//  opcode = iNewInstruction & 4227858432;
+//  opcode = opcode >> 25;
+//  return opcode;
+//}
 
 long getNextPc() {
   long nextPc = pcQueue[0] + 4;
@@ -416,7 +422,83 @@ void insIdentify(long instruction) { //Identify the instruction type based on th
   }
 }
 
-void Execute() { //executes R-type instructions
+
+long getPossibleForwardedRt(){
+  long rdMem;
+  long rdWb;
+  long rtEx;
+  bool isMemHaveRd = false;
+  bool isWbHaveRd = false;
+  
+  insIdentify(insQueue[2]);//check instruction and rd of MEM
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
+      rdMem = (insQueue[2] >> 11) & 0x1f;
+      isMemHaveRd = true;
+      
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+      rdMem = (insQueue[2] >> 16) & 0x1f;
+      isMemHaveRd = true;
+  }
+  
+  insIdentify(insQueue[3]);//check instructioin and rd of WB
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
+      rdWb = (insQueue[3] >> 11) & 0x1f;
+      isWbHaveRd = true;
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+      rdWb = (insQueue[3] >> 16) & 0x1f;
+      isWbHaveRd = true;
+  }
+
+  rtEx = (insQueue[1] >> 16) & 0x1f;//get rt at EX stage
+
+  if(isMemHaveRd && rtEx == rdMem){
+    return aluQueue[1];
+  }else if(isWbHaveRd && rtEx == rdWb){
+    return aluQueue[2];
+  }else{
+    return bReadDataReg2Output;
+  }  
+}
+
+
+long getPossibleForwardedRs(){
+  long rdMem;
+  long rdWb;
+  long rsEx;
+  bool isMemHaveRd = false;
+  bool isWbHaveRd = false;
+  
+  insIdentify(insQueue[2]);//check instruction and rd of MEM
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
+      rdMem = (insQueue[2] >> 11) & 0x1f;
+      isMemHaveRd = true;
+      
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+      rdMem = (insQueue[2] >> 16) & 0x1f;
+      isMemHaveRd = true;
+  }
+  
+  insIdentify(insQueue[3]);//check instructioin and rd of WB
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
+      rdWb = (insQueue[3] >> 11) & 0x1f;
+      isWbHaveRd = true;
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+      rdWb = (insQueue[3] >> 16) & 0x1f;
+      isWbHaveRd = true;
+  }
+
+  rsEx = (insQueue[1] >> 21) & 0x1f;//get rs at EX stage
+
+  if(isMemHaveRd && rsEx == rdMem){
+    return aluQueue[1];
+  }else if(isWbHaveRd && rsEx == rdWb){
+    return aluQueue[2];
+  }else{
+    return aReadDataReg1Output;
+  }  
+}
+
+void Execute() { //executes instructions
   long s;
   long t;
   //  long S;
@@ -430,12 +512,15 @@ void Execute() { //executes R-type instructions
   t = bReadDataReg2Output;
   // mem = cReadDataMemOutput
 
-  //  S = iNewInstruction&65011712;//rs
-  //  T = iNewInstruction&2031616;//rt
-  //  D = iNewInstruction&63488;//rd
   imm = iNewInstruction & 65535; //immediate
   address = iNewInstruction & 67108863; //address
 
+  s = getPossibleForwardedRs();
+  t = getPossibleForwardedRt();
+  
+
+  //ALU Execution
+  insIdentify(insQueue[1]);
   if (strcmp(operation, "add") == 0) {
     aluQueue[0] = s + t;
     //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
@@ -469,6 +554,21 @@ void Execute() { //executes R-type instructions
   }
 }
 
+long getRD(long instruction){
+  long rd = (instruction >> 11) & 0x1f;
+  return rd;
+}
+
+long getRS(long instruction){
+  long rs = (instruction >> 21) & 0x1f;
+  return rs;
+}
+
+long getRT(long instruction){
+  long rt = (instruction >> 16) & 0x1f;
+  return rt;
+}
+
 void debugPipelineQueues() {
   Serial.println("\n<< DEBUGGING PART - START  >>");
   char output[MAX_STRLEN];
@@ -483,4 +583,16 @@ void debugPipelineQueues() {
   sprintf(output, "PC at WB: %08lx\tInst at WB: %08lx\tALU at WB: %08lx", pcQueue[4], insQueue[3], aluQueue[2]);
   Serial.println(output);
   Serial.println("<< DEBUGGING PART - END  >>\n");
+}
+
+void noBreadboardStart(){
+  Serial.println("imagine the START switch was pressed at this moment");
+  Serial.print("START");
+  Serial.write(TERMINATOR);
+  hasStartRequested = true;
+}
+
+void noBreadboardClock(){
+  Serial.println("imagine the CLOCK switch was pressed at this moment");
+  hasClockCycle = true;
 }
