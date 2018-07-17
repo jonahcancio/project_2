@@ -1,7 +1,9 @@
+//test with 01294820 000000a0 0000000f 00000005
 //SIZE DEFINITIONS
 #define MAX_STRLEN 50
 #define MAX_SUBLEN 9
 #define TERMINATOR '\n'
+#define DEBOUNCE_THRESHOLD 30
 //PIN DEFINITIONS
 #define startSwitch 4
 #define clockSwitch 5
@@ -11,60 +13,72 @@
 #define invalidExceptionLED A3
 #define arithmeticExceptionLED A4
 
-//Loop Boolean Hooks 
+//Loop Boolean Hooks
 bool hasStartRequested;
 bool hasStartCommenced;
-bool cycle;
-bool start;
-bool pendingInput;
+bool hasServerInput;
+bool hasClockCycle;
 
-//Debouncing Hooks
-long timeLastClockPress;
-int lastClockRead;
-long timeLastStartPress;
-int lastStartRead;
 
-//string variables from server
+//string variables for input and output to server
 char stringFromServer[MAX_STRLEN];
 char stringToServer[MAX_STRLEN];
 
-//separate strings from server
-char pFromServer[MAX_SUBLEN];
-char iFromServer[MAX_SUBLEN];
-char aFromServer[MAX_SUBLEN];
-char bFromServer[MAX_SUBLEN];
-char cFromServer[MAX_SUBLEN];
-
-//num variables to server
-int pNewPcInput;
+//variables inputted to server
 int aReadReg1Input;
 int bReadReg2Input;
 int cWriteRegInput;
-int dWriteDataReg;
+long dWriteDataReg;
 int eRegWrite;
-int fAddressMem;
-int gWriteDataMem;
+long fAddressMem;
+long gWriteDataMem;
 int hMemRead;
-int iMemWrite; 
+int iMemWrite;
 
-//variables from server
+//variables outputted by server
 long iNewInstruction;
 long aReadDataReg1Output;
 long bReadDataReg2Output;
 long cReadDataMemOutput;
 
-//pipeline instruction queue
-int iPipeLineQueue[5];
+//pipeline arrays
+long pcQueue[5];
+long insQueue[4];
+//int hazardQueue[4];
+long aluQueue[3];
 
-//Others
-char operation[4];
+
+//mutable strings for function returns
+char operation[MAX_SUBLEN];
+
+//hazard and exception check;
+bool toBranchOrNot;
+int controlHazard;
+int dataHazard;
+int invalidInstruction;
+int arithmeticOverflow;
+
+//Debouncing
+long timeLastStartToggle;
+bool isStartDebouncing;
+int currStartState;
+int prevStartState;
+long timeLastClockToggle;
+bool isClockDebouncing;
+int currClockState;
+int prevClockState;
+
+
+//Last Two PC digits
+int pclast;
+int pcsecondlast;
 
 void setup() {
   //PIN MODES
   int i;
   pinMode(startSwitch, INPUT);
   pinMode(clockSwitch, INPUT);
-  for(i=6;i<14;i++){
+  for (i = 6; i < 14; i++) {
     pinMode(i, OUTPUT);
   }
   pinMode(readyLED, OUTPUT);
@@ -76,38 +90,22 @@ void setup() {
   //SERIAL BEGIN
   Serial.begin(9600);
   Serial.setTimeout(200);
-  
+
   //BOOLEANS
   hasStartRequested = false;
   hasStartCommenced = false;
-  cycle = false;
-  pendingInput = true;
+  hasClockCycle = false;
+  hasServerInput = false;
+
+  //Debounce Variables
+  currStartState = LOW;
+  currClockState = LOW;
 
   //OTHER SETUP
   memset(stringFromServer, 0, MAX_STRLEN);
   memset(stringToServer, 0 , MAX_STRLEN);
-}
 
-void loop() {
-  int i;
-  if(!hasStartRequested){
-    debounceStartPoll();
-  }else if(!hasStartCommenced){
-    if(Serial.available() > 0){
-      Serial.readStringUntil(0).toCharArray(stringFromServer, MAX_STRLEN);
-      hasStartCommenced = true;
-      strcpy(pFromServer, stringFromServer);
-      initVars();
-      printToServerVars();
-    }
-  }else{
-//    debounceClockPoll();
-  }
-}
-
-void initVars(){
-  //init to server vars
-  pNewPcInput = strtoul(stringFromServer, NULL, 16);
+  //TO SERVER VARS
   aReadReg1Input = 0;
   bReadReg2Input = 0;
   cWriteRegInput = 0;
@@ -116,42 +114,137 @@ void initVars(){
   fAddressMem = 0;
   gWriteDataMem = 0;
   hMemRead = 0;
-  iMemWrite = 0; 
+  iMemWrite = 0;
 
-  //init from server vars
+  //FROM SERVER VARS
   iNewInstruction = 0;
   aReadDataReg1Output = 0;
   bReadDataReg2Output = 0;
   cReadDataMemOutput = 0;
-  memset(iPipeLineQueue, 0, 5);
+  memset(insQueue, 0, 4);
+  memset(aluQueue, 0, 3);
+  memset(pcQueue, 0, 5);
 }
 
-void enqueue(){
-  int j;
-  for(j=4; j>0; j--){
-    iPipeLineQueue[j] = iPipeLineQueue[j-1];
+void loop() {
+  int i;
+  if (!hasStartRequested) {
+    debounceStartPoll();
+    //Serial.println("imagine the START switch was pressed at this moment");
+  } else if (!hasStartCommenced) {
+    if (Serial.available() > 0) {
+      Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN);
+      pcQueue[0] = strtoul(stringFromServer, NULL, 16);
+      digitalWrite(readyLED, HIGH);
+      printPipelineInput();
+      hasStartCommenced = true;
+    }
+  } else if (!hasServerInput) {
+    if (Serial.available() > 0) { //get server input
+      //get output of ALU
+      insIdentify(insQueue[1]);
+      Serial.print("The instruction to execute is: ");
+      Serial.println(operation);
+      Execute();
+
+      //get output of instruction mem, register file, data mem
+      Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN);
+      storeServerOutput();
+
+      //get next pC
+
+      //debugging
+      debugPipelineQueues();
+
+      hasServerInput = true;
+    }
+  } else if (!hasClockCycle) {
+    debounceClockPoll();
+    //Serial.println("imagine the CLOCK switch was pressed at this moment");
+  } else if(hasClockCycle){
+    digitalWrite(readyLED, LOW);
+    movePipelineQueue();
+    updatePipelineInput();
+    printPipelineInput();
+
+    lastTwoPcDigits();
+    outputBCD(pclast, 6);
+    outputBCD(pcsecondlast, 10);
+    hasServerInput = false;
+    hasClockCycle = false;
   }
-  iPipeLineQueue[0] = iNewInstruction;
 }
 
-void printToServerVars(){
-    sprintf(stringToServer, "%08x ", pNewPcInput);
-    Serial.print(stringToServer);
-    print5BitBinary(aReadReg1Input);
-    print5BitBinary(bReadReg2Input);
-    print5BitBinary(cWriteRegInput);
-    sprintf(stringToServer, "%08x %1d %08x %08x %1d %1d",
-      dWriteDataReg, eRegWrite, fAddressMem, gWriteDataMem, hMemRead, iMemWrite);
-    Serial.print(stringToServer);
-    Serial.write(TERMINATOR);
+//prints the pipeline variables as input to server
+void printPipelineInput() {
+  sprintf(stringToServer, "%08lx ", pcQueue[0]);
+  Serial.print(stringToServer);
+  print5BitBinary(aReadReg1Input);
+  print5BitBinary(bReadReg2Input);
+  print5BitBinary(cWriteRegInput);
+  sprintf(stringToServer, "%08lx %1d %08lx %08lx %1d %1d",
+          dWriteDataReg, eRegWrite, fAddressMem, gWriteDataMem, hMemRead, iMemWrite);
+  Serial.print(stringToServer);
+  Serial.write(TERMINATOR);
 }
 
-void print5BitBinary(int num){
+//Call every clock cycle to move pipeline and update pipeline variables to input to server
+void updatePipelineInput() {
+  pcQueue[0] = getNextPc();
+
+  aReadReg1Input = (insQueue[0] >> 21) & 0x1f;
+  bReadReg2Input = (insQueue[0] >> 16) & 0x1f;
+  cWriteRegInput = (insQueue[0] >> 11) & 0x1f;
+
+  insIdentify(insQueue[3]);
+  if (strcmp(operation, "lw") == 0 || strcmp(operation, "nop") == 0) {
+    dWriteDataReg = cReadDataMemOutput;
+  } else {
+    dWriteDataReg = aluQueue[2];
+  }
+  eRegWrite = strcmp(operation, "j") != 0 && strcmp(operation, "beq") != 0 && strcmp(operation, "sw") != 0;
+  fAddressMem = aluQueue[1];
+  gWriteDataMem = insQueue[3] & 0xffff;
+
+  insIdentify(insQueue[2]);
+  hMemRead = strcmp(operation, "lw") == 0;
+  iMemWrite = strcmp(operation, "sw") == 0;
+}
+
+//move each instruction in the pipeline one stage to the right
+void movePipelineQueue() {
+  int j;
+  for (j = 4; j > 0; j--) {
+    pcQueue[j] = pcQueue[j - 1];
+  }
+
+  for (j = 3; j > 0; j--) {
+    insQueue[j] = insQueue[j - 1];
+  }
+
+  for (j = 2; j > 0; j--) {
+    aluQueue[j] = aluQueue[j - 1];
+  }
+}
+
+void printToServerVars() {
+  sprintf(stringToServer, "%08x ", pcQueue[0]);
+  Serial.print(stringToServer);
+  print5BitBinary(aReadReg1Input);
+  print5BitBinary(bReadReg2Input);
+  print5BitBinary(cWriteRegInput);
+  sprintf(stringToServer, "%08x %1d %08x %08x %1d %1d",
+          dWriteDataReg, eRegWrite, fAddressMem, gWriteDataMem, hMemRead, iMemWrite);
+  Serial.print(stringToServer);
+  Serial.write(TERMINATOR);
+}
+
+void print5BitBinary(int num) {
   int mult = 1;
   int bcd = 0;
   int i;
-  for(i = 0; i < 5; i++){
-    bcd += (num%2)*mult;
+  for (i = 0; i < 5; i++) {
+    bcd += (num % 2) * mult;
     num /= 2;
     mult *= 10;
   }
@@ -160,212 +253,343 @@ void print5BitBinary(int num){
   Serial.print(output);
 }
 
-void updateToServerVars(){
-  
+void lastTwoPcDigits(){//obtain last two PC digits of current instruction
+  long pc;
+  pc = pcQueue[0];
+  pc = pc/4;
+  pclast = pc%10;
+  pc = pc/10;
+  pcsecondlast = pc%10;
 }
 
-void outputBCD(int num, int pin0){
+void outputBCD(int num, int pin0) {
   int i;
-  for(i = 0; i < 4; i++){
-    digitalWrite(pin0+i, num%2);
+  for (i = 0; i < 4; i++) {
+    digitalWrite(pin0 + i, num % 2);
     num /= 2;
   }
 }
 
-//void debounceClockPoll(){
-//  int threshold = 300;
-//  int clockRead = digitalRead(clockSwitch);
-//  if(clockRead != clockState){
-//    timeLastClockPress = millis();
-//  }
-//  if(millis()-timeLastClockPress > threshold && clockRead != clockState){
-//    clockState = !clockState;
-//  }  
-//  if(clockState == HIGH and lastClockState == LOW){
-//  }
-//  
-//  lastClockState = clockState;
+void debounceStartPoll() {
+  //if check if switch has been toggled and start debounce timer if haven't debounced yet
+  if (digitalRead(startSwitch) != currStartState && !isStartDebouncing) {
+    timeLastStartToggle = millis();
+    isStartDebouncing = true;
+  }
+
+  //restart debounce timer if fluctuation lasted too short
+  if (digitalRead(startSwitch) == currStartState) {
+    isStartDebouncing = false;
+  }
+
+  //check if debounce DEBOUNCE_THRESHOLD has been reached during debouncing
+  if (millis() - timeLastStartToggle > DEBOUNCE_THRESHOLD && isStartDebouncing) {
+    currStartState = !currStartState;
+    isStartDebouncing = false;
+  }
+
+  //check for rising edge
+  if (currStartState == HIGH && prevStartState == LOW) {
+    Serial.print("START");
+    Serial.write(TERMINATOR);
+    hasStartRequested = true;
+    Serial.println("Debounced rising detected");
+  }
+
+  //check for falling edge
+  if (currStartState == LOW && prevStartState == HIGH) {
+    Serial.println("Debounced falling detected");
+  }
+
+  prevStartState = currStartState;
+}
+
+void debounceClockPoll() {
+  //if check if switch has been toggled and start debounce timer if haven't debounced yet
+  if (digitalRead(clockSwitch) != currClockState && !isClockDebouncing) {
+    timeLastClockToggle = millis();
+    isClockDebouncing = true;
+  }
+
+  //restart debounce timer if fluctuation lasted too short
+  if (digitalRead(clockSwitch) == currClockState) {
+    isClockDebouncing = false;
+  }
+
+  //check if debounce DEBOUNCE_THRESHOLD has been reached during debouncing
+  if (millis() - timeLastClockToggle > DEBOUNCE_THRESHOLD && isClockDebouncing) {
+    currClockState = !currClockState;
+    isClockDebouncing = false;
+  }
+
+  //check for rising edge
+  if (currClockState == HIGH && prevClockState == LOW) {
+    hasClockCycle = true;
+    Serial.println("Debounced rising detected");
+  }
+
+  //check for falling edge
+  if (currClockState == LOW && prevClockState == HIGH) {
+    Serial.println("Debounced falling detected");
+  }
+
+  prevClockState = currClockState;
+}
+
+//parses stores the server input variables
+void storeServerOutput() {
+  char *token;
+  token = strtok(stringFromServer, " ");
+  insQueue[0] = strtoul(token, NULL, 16);//IIIIIIII
+  token = strtok(NULL, " ");
+  aReadDataReg1Output = strtoul(token, NULL, 16);//AAAAAAA
+  token = strtok(NULL, " ");
+  bReadDataReg2Output = strtoul(token, NULL, 16);//BBBBBBBB
+  token = strtok(NULL, " ");
+  cReadDataMemOutput = strtoul(token, NULL, 16);//CCCCCCCC
+}
+
+//long extractOpcode() {
+//  long opcode;
+//  opcode = iNewInstruction & 4227858432;
+//  opcode = opcode >> 25;
+//  return opcode;
 //}
 
-void serverOutputSegregate(char stringFromServer[MAX_STRLEN]){//Segregate instructions sent by the server
-  char *token;
-
-  token = strtok(stringFromServer, " ");
-  strcpy(iFromServer,token);//IIIIIIII
-  
-  token = strtok(NULL, " ");
-  strcpy(aFromServer, token);//AAAAAAAA
-
-  token = strtok(NULL, " ");
-  strcpy(bFromServer,token);//BBBBBBBB
-
-  token = strtok(NULL, " ");
-  strcpy(cFromServer,token);//CCCCCCCC
-}
-
-void  serverOutputDecode(){
-  iNewInstruction = strtol(iFromServer, NULL, 16);
-  aReadDataReg1Output = strtol(aFromServer, NULL, 16);
-  bReadDataReg2Output = strtol(bFromServer, NULL, 16);
-  cReadDataMemOutput = strtol(cFromServer, NULL, 16);
-}
-
-long extractOpcode(){
-  long opcode;
-  opcode = iNewInstruction&4227858432;
-  opcode = opcode>>25;
-  return opcode;
-}
-
-void identifyInstructionType(long opcode){//Identify the instruction type based on the given opcode
-  long func;
-  func = instruction&2047;
-  if(opcode == 0){//0 is R-type
-    switch(func){//identify operation
-      case 32:{
-        strcpy(operation, "add");
-        break;
-      }
-      case 34:{
-        strcpy(operation, "sub");
-        break;
-      }case 36:{
-        strcpy(operation, "and");
-        break;
-      }case 37:{
-        strcpy(operation, "or");
-        break;
-      }case 42:{
-        strcpy(operation, "slt");
-        break;
-      }
+long getNextPc() {
+  long nextPc = pcQueue[0] + 4;
+  insIdentify(insQueue[1]);
+  if (strcmp(operation, "j") == 0 ) {
+    nextPc = (insQueue[1] && 0x3ffffff) << 2;
+  } else if (strcmp(operation, "beq") == 0) {
+    if (aluQueue[0] == 1) { //determine whether to branch
+      nextPc = pcQueue[2] + (insQueue[1] && 0xffff) << 2;
     }
-  }else if(opcode == 2){//1 is J-type
+  }
+  return nextPc;
+}
+
+void insIdentify(long instruction) { //Identify the instruction type based on the given opcode
+  long func;
+  long opcode = (instruction >> 26) & 0x3f;
+  func = instruction & 0x3f;;
+  if (opcode == 0) { //0 is R-type
+    switch (func) { //identify operation
+      case 32: {
+          strcpy(operation, "add");
+          break;
+        }
+      case 34: {
+          strcpy(operation, "sub");
+          break;
+      } case 36: {
+          strcpy(operation, "and");
+          break;
+      } case 37: {
+          strcpy(operation, "or");
+          break;
+      } case 42: {
+          strcpy(operation, "slt");
+          break;
+      } default:
+        strcpy(operation, "r-nop");
+    }
+  } else if (opcode == 2) { //1 is J-type
     strcpy(operation, "j");
-  }else{//2 is I-type
-    switch(opcode){//identify operation
-      case 8:{
-        strcpy(operation, "addi");
-        break;
-      }
-      case 35:{
-        strcpy(operation, "lw");
-        break;
-      }case 43:{
-        strcpy(operation, "sw");
-        break;
-      }case 4:{
-        strcpy(operation, "beq");
-        break;
+  } else { //2 is I-type
+    switch (opcode) { //identify operation
+      case 8: {
+          strcpy(operation, "addi");
+          break;
+        }
+      case 35: {
+          strcpy(operation, "lw");
+          break;
+      } case 43: {
+          strcpy(operation, "sw");
+          break;
+      } case 4: {
+          strcpy(operation, "beq");
+          break;
+      } default:
+        strcpy(operation, "i-nop");
     }
   }
 }
 
-void Execute(){//executes R-type instructions
+char* insReturnOperation(long instruction) { //Identify the instruction type based on the given opcode and return operation
+  long func;
+  long opcode = (instruction >> 26) & 0x3f;
+  char op[6];
+  
+  func = instruction & 0x3f;;
+  if (opcode == 0) { //0 is R-type
+    switch (func) { //identify operation
+      case 32: {
+          strcpy(op, "add");
+          break;
+        }
+      case 34: {
+          strcpy(op, "sub");
+          break;
+      } case 36: {
+          strcpy(op, "and");
+          break;
+      } case 37: {
+          strcpy(op, "or");
+          break;
+      } case 42: {
+          strcpy(op, "slt");
+          break;
+      } default:
+        strcpy(op, "r-nop");
+    }
+  } else if (opcode == 2) { //1 is J-type
+    strcpy(op, "j");
+  } else { //2 is I-type
+    switch (opcode) { //identify operation
+      case 8: {
+          strcpy(op, "addi");
+          break;
+        }
+      case 35: {
+          strcpy(op, "lw");
+          break;
+      } case 43: {
+          strcpy(op, "sw");
+          break;
+      } case 4: {
+          strcpy(op, "beq");
+          break;
+      } default:
+        strcpy(op, "i-nop");
+    }
+  }
+}
+
+int checkForHazards(){
+  int hazard = 0; //0 means no hazard, 1 means EX-detected Case 1 (RT source), 2 means EX-detected Case 1 (RS source)
+  
+  //EX-detected hazard checking
+  long RSsource1;
+  long RTsource1;
+  long destination;
+
+  //Case 1
+  //Destinations
+  if (strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){//RD as destination
+    destination = getRD(insQueue[2]);
+  } else if (strcmp(operation, "addi") == 0 || strcmp(operation, "lw")) {//RT as destination
+    destination = getRT(insQueue[2]);
+  }
+
+  //Sources
+  if((insReturnOperation(insQueue[1]) == "add") || (insReturnOperation(insQueue[1]) == "sub") || (insReturnOperation(insQueue[1]) == "and") || (insReturnOperation(insQueue[1]) == "or") || (insReturnOperation(insQueue[1]) == "slt")){
+    RTsource1 = getRT(insQueue[1]);
+  }
+
+  if((insReturnOperation(insQueue[1]) == "add") || (insReturnOperation(insQueue[1]) == "sub") || (insReturnOperation(insQueue[1]) == "and") || (insReturnOperation(insQueue[1]) == "or") || (insReturnOperation(insQueue[1]) == "slt") || (insReturnOperation(insQueue[1]) == "addi") || (insReturnOperation(insQueue[1]) == "lw")){
+    RSsource1 = getRS(insQueue[1]);
+  }
+
+  //Hazard Checking
+  if(destination == RTsource1){
+    hazard = 1;
+  }else if(destination == RSsource1){
+    hazard = 2;
+  }
+
+  return hazard;
+}
+
+void Execute() { //executes instructions
   long s;
   long t;
-  long S;
-  long T;
-  long D;
+  //  long S;
+  //  long T;
+  //  long D;
   long imm;
   long address;
- // long mem;
-  
+  // long mem;
+
   s = aReadDataReg1Output;
   t = bReadDataReg2Output;
- // mem = cReadDataMemOutput
- 
-  S = iNewInstruction&65011712;//rs
-  T = iNewInstruction&2031616;//rt
-  D = iNewInstruction&63488;//rd
-  imm = iNewInstruction&65535;//immediate 
-  address = iNewInstruction&67108863;//address
+  // mem = cReadDataMemOutput
+
+  //  S = iNewInstruction&65011712;//rs
+  //  T = iNewInstruction&2031616;//rt
+  //  D = iNewInstruction&63488;//rd
+  imm = iNewInstruction & 65535; //immediate
+  address = iNewInstruction & 67108863; //address
+
+  //Hazard Detection and Forwarding
+  if(checkForHazards() == 1){
+    t = aluQueue[1];
+  }else if(checkForHazards() == 2){
+    s = aluQueue[1];
+  }
   
-  if(strcmp(operation, "add") == 0){
-    aluResultEx = s + t;
+  //ALU Execution
+  if (strcmp(operation, "add") == 0) {
+    aluQueue[0] = s + t;
     //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
-  }else if(strcmp(operation, "sub") == 0){
-    aluResultEx = s - t;
-  }else if(strcmp(operation, "and") == 0){
-    aluResultEx = s&t;
-  }else if(strcmp(operation, "or") == 0){
-    aluResultEx = s or t;
-  }else if(strcmp(operation, "slt") == 0){
-    if(s < t){
-      aluResultEx = 1;
-    }else{
-      aluResultEx = 0;
+  } else if (strcmp(operation, "sub") == 0) {
+    aluQueue[0] = s - t;
+  } else if (strcmp(operation, "and") == 0) {
+    aluQueue[0] = s & t;
+  } else if (strcmp(operation, "or") == 0) {
+    aluQueue[0] = s | t;
+  } else if (strcmp(operation, "slt") == 0) {
+    if (s < t) {
+      aluQueue[0] = 1;
+    } else {
+      aluQueue[0] = 0;
     }
-  }else if(strcmp(operation, "addi") == 0){
-    return = s + imm;
+  } else if (strcmp(operation, "addi") == 0) {
+    aluQueue[0] = s + imm;
     //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
-  }else if(strcmp(operation, "lw") == 0){
-    return s + imm;
-  }else if(strcmp(operation, "sw") == 0){
-    return s + imm;
-  }else if(strcmp(operation, "beq") == 0){
-    if(s == t){
-      return 1;
-    }else{
-      return 0;
+  } else if (strcmp(operation, "lw") == 0) {
+
+  } else if (strcmp(operation, "sw") == 0) {
+
+  } else if (strcmp(operation, "beq") == 0) {
+    if (s == t) {
+      aluQueue[0] = 1;
+    } else {
+      aluQueue[0] = 0;
     }
-  }else if(strcmp(operation, "j") == 0){
-     return -1;
+  } else if (strcmp(operation, "j") == 0) {
+
   }
 }
 
-//
-//void loop() {
-//  int i;
-//  if(!hasStartRequested){
-//    debounceStartPoll();
-//  }else if(!hasStartCommenced){
-//    if(Serial.available() > 0){
-//      Serial.readStringUntil(0).toCharArray(stringFromServer, MAX_STRLEN);
-//      hasStartCommenced = true;
-////      strcpy(pFromServer, stringFromServer);
-////      initToServerVars();
-////      printToServerVars();
-//    }
-//  }else{
-//    debounceClockPoll();
-//  }
-//}
-////
-////void outputBCD(int num, int pin0){
-////  int i;
-////  for(i = 0; i < 4; i++){
-////    digitalWrite(pin0+i, num%2);
-////    num /= 2;
-////  }
-////}
-////
-//void debounceClockPoll(){
-//  int threshold = 30;
-//  int clockRead = digitalRead(clockSwitch);
-//  if(clockRead == HIGH && lastClockRead == LOW){
-//    Serial.print("HI");
-//    timeLastClockPress = millis();
-//  }
-//  if(clockRead == HIGH && lastClockRead == LOW){
-//    //Clock actions here
-//    Serial.print("HELLO");
-//    digitalWrite(readyLED, LOW);
-//  }
-//  lastClockRead = clockRead;
-//}
-//
-void debounceStartPoll(){
-  int threshold = 30;
-  int startRead = digitalRead(startSwitch);
-  if(startRead == HIGH && lastStartRead == LOW){
-    timeLastStartPress = millis();
-  }
-  if(millis()-timeLastStartPress > threshold && startRead == HIGH){
-    hasStartRequested = true;
-    Serial.print("START");
-    Serial.write(0);
-    digitalWrite(readyLED, HIGH);
-  }  
-  lastStartRead = startRead;
+long getRD(long instruction){
+  long rd = (instruction >> 11) & 0x1f;
+  return rd;
+}
+
+long getRS(long instruction){
+  long rs = (instruction >> 21) & 0x1f;
+  return rs;
+}
+
+long getRT(long instruction){
+  long rt = (instruction >> 16) & 0x1f;
+  return rt;
+}
+
+void debugPipelineQueues() {
+  Serial.println("\n<< DEBUGGING PART - START  >>");
+  char output[MAX_STRLEN];
+  sprintf(output, "PC at IF: %08lx", pcQueue[0]);
+  Serial.println(output);
+  sprintf(output, "PC at ID: %08lx\tIns at ID: %08lx", pcQueue[1], insQueue[0]);
+  Serial.println(output);
+  sprintf(output, "PC at EX: %08lx\tInst at EX: %08lx\tALU at EX: %08lx", pcQueue[2], insQueue[1], aluQueue[0]);
+  Serial.println(output);
+  sprintf(output, "PC at MEM: %08lx\tInst at MEM: %08lx\tALU at MEM: %08lx", pcQueue[3], insQueue[2], aluQueue[1]);
+  Serial.println(output);
+  sprintf(output, "PC at WB: %08lx\tInst at WB: %08lx\tALU at WB: %08lx", pcQueue[4], insQueue[3], aluQueue[2]);
+  Serial.println(output);
+  Serial.println("<< DEBUGGING PART - END  >>\n");
 }
