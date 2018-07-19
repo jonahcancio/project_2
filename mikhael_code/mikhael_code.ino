@@ -47,6 +47,8 @@ long insQueue[4];
 //int hazardQueue[4];
 long aluQueue[3];
 
+//Conditional Branching
+bool beq;
 
 //mutable strings for function returns
 char operation[MAX_SUBLEN];
@@ -141,6 +143,10 @@ void loop() {
     }
   } else if (!hasServerInput) {
     if (Serial.available() > 0) { //get server input
+
+      //get beq in ID
+      idBeqResolve();
+      
       //get output of ALU
       insIdentify(insQueue[1]);
       Serial.print("The instruction to execute is: ");
@@ -417,89 +423,78 @@ void insIdentify(long instruction) { //Identify the instruction type based on th
   }
 }
 
-char* insReturnOperation(long instruction) { //Identify the instruction type based on the given opcode and return operation
-  long func;
-  long opcode = (instruction >> 26) & 0x3f;
-  char op[6];
+long getPossibleForwardedRt(){
+  long rdMem;
+  long rdWb;
+  long rtEx;
+  bool isMemHaveRd = false;
+  bool isWbHaveRd = false;
   
-  func = instruction & 0x3f;;
-  if (opcode == 0) { //0 is R-type
-    switch (func) { //identify operation
-      case 32: {
-          strcpy(op, "add");
-          break;
-        }
-      case 34: {
-          strcpy(op, "sub");
-          break;
-      } case 36: {
-          strcpy(op, "and");
-          break;
-      } case 37: {
-          strcpy(op, "or");
-          break;
-      } case 42: {
-          strcpy(op, "slt");
-          break;
-      } default:
-        strcpy(op, "r-nop");
-    }
-  } else if (opcode == 2) { //1 is J-type
-    strcpy(op, "j");
-  } else { //2 is I-type
-    switch (opcode) { //identify operation
-      case 8: {
-          strcpy(op, "addi");
-          break;
-        }
-      case 35: {
-          strcpy(op, "lw");
-          break;
-      } case 43: {
-          strcpy(op, "sw");
-          break;
-      } case 4: {
-          strcpy(op, "beq");
-          break;
-      } default:
-        strcpy(op, "i-nop");
-    }
+  insIdentify(insQueue[2]);//check instruction and rd of MEM
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
+      rdMem = (insQueue[2] >> 11) & 0x1f;
+      isMemHaveRd = true;
+      
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+      rdMem = (insQueue[2] >> 16) & 0x1f;
+      isMemHaveRd = true;
   }
+  
+  insIdentify(insQueue[3]);//check instructioin and rd of WB
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
+      rdWb = (insQueue[3] >> 11) & 0x1f;
+      isWbHaveRd = true;
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+      rdWb = (insQueue[3] >> 16) & 0x1f;
+      isWbHaveRd = true;
+  }
+
+  rtEx = (insQueue[1] >> 16) & 0x1f;//get rt at EX stage
+
+  if(isMemHaveRd && rtEx == rdMem){
+    return aluQueue[1];
+  }else if(isWbHaveRd && rtEx == rdWb){
+    return aluQueue[2];
+  }else{
+    return bReadDataReg2Output;
+  }  
 }
 
-int checkForHazards(){
-  int hazard = 0; //0 means no hazard, 1 means EX-detected Case 1 (RT source), 2 means EX-detected Case 1 (RS source)
+long getPossibleForwardedRs(){
+  long rdMem;
+  long rdWb;
+  long rsEx;
+  bool isMemHaveRd = false;
+  bool isWbHaveRd = false;
   
-  //EX-detected hazard checking
-  long RSsource1;
-  long RTsource1;
-  long destination;
-
-  //Case 1
-  //Destinations
-  if (strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){//RD as destination
-    destination = getRD(insQueue[2]);
-  } else if (strcmp(operation, "addi") == 0 || strcmp(operation, "lw")) {//RT as destination
-    destination = getRT(insQueue[2]);
+  insIdentify(insQueue[2]);//check instruction and rd of MEM
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
+      rdMem = (insQueue[2] >> 11) & 0x1f;
+      isMemHaveRd = true;
+      
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+      rdMem = (insQueue[2] >> 16) & 0x1f;
+      isMemHaveRd = true;
+  }
+  
+  insIdentify(insQueue[3]);//check instruction and rd of WB
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
+      rdWb = (insQueue[3] >> 11) & 0x1f;
+      isWbHaveRd = true;
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+      rdWb = (insQueue[3] >> 16) & 0x1f;
+      isWbHaveRd = true;
   }
 
-  //Sources
-  if((insReturnOperation(insQueue[1]) == "add") || (insReturnOperation(insQueue[1]) == "sub") || (insReturnOperation(insQueue[1]) == "and") || (insReturnOperation(insQueue[1]) == "or") || (insReturnOperation(insQueue[1]) == "slt")){
-    RTsource1 = getRT(insQueue[1]);
-  }
+  rsEx = (insQueue[1] >> 21) & 0x1f;//get rs at EX stage
 
-  if((insReturnOperation(insQueue[1]) == "add") || (insReturnOperation(insQueue[1]) == "sub") || (insReturnOperation(insQueue[1]) == "and") || (insReturnOperation(insQueue[1]) == "or") || (insReturnOperation(insQueue[1]) == "slt") || (insReturnOperation(insQueue[1]) == "addi") || (insReturnOperation(insQueue[1]) == "lw")){
-    RSsource1 = getRS(insQueue[1]);
-  }
-
-  //Hazard Checking
-  if(destination == RTsource1){
-    hazard = 1;
-  }else if(destination == RSsource1){
-    hazard = 2;
-  }
-
-  return hazard;
+  if(isMemHaveRd && rsEx == rdMem){
+    return aluQueue[1];
+  }else if(isWbHaveRd && rsEx == rdWb){
+    return aluQueue[2];
+  }else{
+    return aReadDataReg1Output;
+  }  
 }
 
 void Execute() { //executes instructions
@@ -516,20 +511,15 @@ void Execute() { //executes instructions
   t = bReadDataReg2Output;
   // mem = cReadDataMemOutput
 
-  //  S = iNewInstruction&65011712;//rs
-  //  T = iNewInstruction&2031616;//rt
-  //  D = iNewInstruction&63488;//rd
   imm = iNewInstruction & 65535; //immediate
   address = iNewInstruction & 67108863; //address
 
-  //Hazard Detection and Forwarding
-  if(checkForHazards() == 1){
-    t = aluQueue[1];
-  }else if(checkForHazards() == 2){
-    s = aluQueue[1];
-  }
+  s = getPossibleForwardedRs();
+  t = getPossibleForwardedRt();
   
+
   //ALU Execution
+  insIdentify(insQueue[1]);
   if (strcmp(operation, "add") == 0) {
     aluQueue[0] = s + t;
     //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
@@ -552,30 +542,105 @@ void Execute() { //executes instructions
 
   } else if (strcmp(operation, "sw") == 0) {
 
-  } else if (strcmp(operation, "beq") == 0) {
-    if (s == t) {
-      aluQueue[0] = 1;
-    } else {
-      aluQueue[0] = 0;
-    }
   } else if (strcmp(operation, "j") == 0) {
 
   }
 }
 
-long getRD(long instruction){
-  long rd = (instruction >> 11) & 0x1f;
-  return rd;
+long getPossibleIdForwardedRt(){
+  long rdEx;
+  long rdMem;
+  long rtId;
+  bool isExHaveRd = false;
+  bool isMemHaveRd = false;
+  
+  insIdentify(insQueue[1]);//check instruction and rd of EX
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
+      rdEx = (insQueue[1] >> 11) & 0x1f;
+      isExHaveRd = true;
+      
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+      rdEx = (insQueue[1] >> 16) & 0x1f;
+      isExHaveRd = true;
+  }
+  
+  insIdentify(insQueue[2]);//check instructioin and rd of MEM
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
+      rdMem = (insQueue[2] >> 11) & 0x1f;
+      isMemHaveRd = true;
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+      rdMem = (insQueue[2] >> 16) & 0x1f;
+      isMemHaveRd = true;
+  }
+
+  rtId = (insQueue[0] >> 16) & 0x1f;//get rt at ID stage
+
+  if(isExHaveRd && rtId == rdEx){
+    return aluQueue[0];
+  }else if(isMemHaveRd && rtId == rdMem){
+    return aluQueue[1];
+  }else{
+    return bReadDataReg2Output;
+  }  
 }
 
-long getRS(long instruction){
-  long rs = (instruction >> 21) & 0x1f;
-  return rs;
+long getPossibleIdForwardedRs(){
+  long rdEx;
+  long rdMem;
+  long rsId;
+  bool isExHaveRd = false;
+  bool isMemHaveRd = false;
+  
+  insIdentify(insQueue[1]);//check instruction and rd of EX
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
+      rdEx = (insQueue[1] >> 11) & 0x1f;
+      isExHaveRd = true;
+      
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+      rdEx = (insQueue[1] >> 16) & 0x1f;
+      isExHaveRd = true;
+  }
+  
+  insIdentify(insQueue[2]);//check instructioin and rd of MEM
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
+      rdMem = (insQueue[2] >> 11) & 0x1f;
+      isMemHaveRd = true;
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+      rdMem = (insQueue[2] >> 16) & 0x1f;
+      isMemHaveRd = true;
+  }
+
+  rsId = (insQueue[0] >> 16) & 0x1f;//get rt at ID stage
+
+  if(isExHaveRd && rsId == rdEx){
+    return aluQueue[0];
+  }else if(isMemHaveRd && rsId == rdMem){
+    return aluQueue[1];
+  }else{
+    return aReadDataReg1Output;
+  }  
 }
 
-long getRT(long instruction){
-  long rt = (instruction >> 16) & 0x1f;
-  return rt;
+void idBeqResolve(){
+  long s;
+  long t;
+  
+  insIdentify(insQueue[0]);
+  if(strcmp(operation, "beq") == 0) {
+    
+    s = aReadDataReg1Output;
+    t = bReadDataReg2Output;
+  
+    //Check for hazards
+    s = getPossibleIdForwardedRs();
+    t = getPossibleIdForwardedRt();
+    
+    if(s == t) {
+      beq = true;
+    }else{
+      beq = false;
+    }
+  }
 }
 
 void debugPipelineQueues() {

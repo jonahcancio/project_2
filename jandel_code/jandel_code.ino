@@ -475,7 +475,7 @@ long getPossibleForwardedRs(){
       isMemHaveRd = true;
   }
   
-  insIdentify(insQueue[3]);//check instructioin and rd of WB
+  insIdentify(insQueue[3]);//check instruction and rd of WB
   if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") || strcmp(operation, "and") || strcmp(operation, "or") || strcmp(operation, "slt")){
       rdWb = (insQueue[3] >> 11) & 0x1f;
       isWbHaveRd = true;
