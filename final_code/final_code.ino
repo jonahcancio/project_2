@@ -1,8 +1,8 @@
 /*test with:
     00400000
-    01294820 00000000 00000000 00000005
-    1252ffff 00000001 00000000 00000005
     01294820 00000000 00000001 00000005
+    1252ffff 00000001 00000000 00000005
+    01294820 00000002 00000002 00000005
 */
 //SIZE DEFINITIONS
 #define MAX_STRLEN 50
@@ -48,7 +48,7 @@ long cReadDataMemOutput;
 
 //pipeline arrays
 long pcQueue[5];
-long insQueue[4];
+long insQueue[5];
 //int hazardQueue[4];
 long aluQueue[3];
 
@@ -156,7 +156,7 @@ void loop() {
     if (Serial.available() > 0) { //get server input
       Serial.println("Server output received");
       //get output of ALU
-      insIdentify(insQueue[1]);
+      insIdentify(insQueue[2]);
       Execute();
       Serial.print("Finished executing ");
       Serial.print(operation);
@@ -204,10 +204,6 @@ void loop() {
     hasClockCycle = false;
   }
 }
-
-
-
-
 
 void print5BitBinary(int num) {
   int mult = 1;
@@ -313,7 +309,7 @@ void movePipelineQueue() {
     pcQueue[j] = pcQueue[j - 1];
   }
 
-  for (j = 3; j > stallIndex-1 && j > 0; j--) {
+  for (j = 4; j > stallIndex-1 && j > 0; j--) {
     insQueue[j] = insQueue[j - 1];
   }
   if(stallIndex > 0){
@@ -332,15 +328,22 @@ long getNextPc() {
     Serial.println("next PC is the same PC");
     return pcQueue[0];
   }
-  
+  char output[MAX_STRLEN];
   long nextPc = pcQueue[0] + 4;
   
-  insIdentify(insQueue[0]);
+  insIdentify(insQueue[2]);
   if (strcmp(operation, "j") == 0 ) {
-    nextPc = (insQueue[0] && 0x3ffffff) << 2;
+    nextPc = (insQueue[2] && 0x3ffffff) << 2;
     flushPipelineRegs("IF", "ID");
-  }else if (strcmp(operation, "beq") == 0 && toBeq) {
-    nextPc = pcQueue[2] + (insQueue[1] && 0xffff) << 2;
+  }else if (strcmp(operation, "beq") == 0 && toBeq) {    
+    nextPc = pcQueue[2] + 4;
+    long imm = insQueue[2] & 0xffff;
+    if(imm >> 15 == 1){      
+      nextPc += (imm - 0x10000) << 2;
+    }else{
+      nextPc += imm << 2;
+    }
+    
     flushPipelineRegs("IF", "ID");
   }
 
@@ -350,11 +353,11 @@ long getNextPc() {
 //Call every clock cycle to move pipeline and update pipeline variables to input to server
 void updatePipelineInput() {
 
-  aReadReg1Input = (insQueue[0] >> 21) & 0x1f;
-  bReadReg2Input = (insQueue[0] >> 16) & 0x1f;
-  cWriteRegInput = (insQueue[0] >> 11) & 0x1f;
+  aReadReg1Input = (insQueue[1] >> 21) & 0x1f;
+  bReadReg2Input = (insQueue[1] >> 16) & 0x1f;
+  cWriteRegInput = (insQueue[1] >> 11) & 0x1f;
 
-  insIdentify(insQueue[3]);
+  insIdentify(insQueue[4]);
   if (strcmp(operation, "lw") == 0 || strcmp(operation, "nop") == 0) {
     dWriteDataReg = cReadDataMemOutput;
   } else {
@@ -362,9 +365,9 @@ void updatePipelineInput() {
   }
   eRegWrite = strcmp(operation, "j") != 0 && strcmp(operation, "beq") != 0 && strcmp(operation, "sw") != 0;
   fAddressMem = aluQueue[1];
-  gWriteDataMem = insQueue[3] & 0xffff;
+  gWriteDataMem = insQueue[4] & 0xffff;
 
-  insIdentify(insQueue[2]);
+  insIdentify(insQueue[3]);
   hMemRead = strcmp(operation, "lw") == 0;
   iMemWrite = strcmp(operation, "sw") == 0;
 }
@@ -452,10 +455,10 @@ long getPossibleForwardedValue(char* reg, char* stage){
   bool isExWbHaveRd = false;
   bool isExHaveLw = false;
 
-  //set i, index for instruction to 1 or 3 depending on whether forwarding done on ID or EX
-  int i = 1;
+  //set i, index for instruction to 1 or 3 depending on whether forwarding done on ID or EX such that values are looked for in EX or WB
+  int i = 2;
   if(strcmp(stage, "EX") == 0){
-    i = 3;
+    i = 4;
   }
 
   //get rd from EX or WB depending on stage
@@ -475,13 +478,13 @@ long getPossibleForwardedValue(char* reg, char* stage){
   }
 
   //get rd from MEM
-  insIdentify(insQueue[2]);
+  insIdentify(insQueue[3]);
   if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") == 0|| strcmp(operation, "and") == 0 || strcmp(operation, "or") == 0 || strcmp(operation, "slt") == 0){
-      rdMem = (insQueue[2] >> 11) & 0x1f;
+      rdMem = (insQueue[3] >> 11) & 0x1f;
       isMemHaveRd = true;
       
   }else if(strcmp(operation, "addi") == 0){
-      rdMem = (insQueue[2] >> 16) & 0x1f;
+      rdMem = (insQueue[3] >> 16) & 0x1f;
       isMemHaveRd = true;
   }
 
@@ -503,7 +506,7 @@ long getPossibleForwardedValue(char* reg, char* stage){
   if(isMemHaveRd && regIdEx == rdMem){//data hazard found in MEM
     return aluQueue[1];
   }else if(isExWbHaveRd && regIdEx == rdExWb){//data hazard found in EX or WB
-    return aluQueue[i-1];
+    return aluQueue[i-2];
   }else{        
     if(strcmp(reg, "rs") == 0){//no hazards found
       return aReadDataReg1Output;
@@ -531,7 +534,7 @@ void Execute() { //executes instructions
   t = getPossibleForwardedValue("rt", "EX");  
 
   //ALU Execution
-  insIdentify(insQueue[1]);
+  insIdentify(insQueue[2]);
   if (strcmp(operation, "add") == 0) {
     aluQueue[0] = s + t;
     //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
@@ -565,13 +568,16 @@ void idBeqResolve(){
   long s;
   long t;
   
-  insIdentify(insQueue[0]);
+  insIdentify(insQueue[1]);
   if(strcmp(operation, "beq") == 0) {
     
     //Check for hazards
     s = getPossibleForwardedValue("rs", "ID");
     t = getPossibleForwardedValue("rt", "ID");
-    
+
+    char output[MAX_STRLEN];
+    sprintf(output, "beq found in ID: s = %ld and t = %ld", s, t);
+    Serial.println(output);
     if(s == t && stallIndex == 0) {
       toBeq = true;
     }else{
@@ -583,21 +589,23 @@ void idBeqResolve(){
 
 
 void flushPipelineRegs(char* from, char* to){
-  
+  if(strcmp(from, "IF") == 0 && strcmp(to, "ID") == 0){
+    insQueue[1] = 0;
+  }
 }
 
 void debugPipelineQueues() {
   Serial.println("\n<< DEBUGGING PART - START  >>");
   char output[MAX_STRLEN];
-  sprintf(output, "PC at IF: %08lx", pcQueue[0]);
+  sprintf(output, "PC at IF: %08lx\tIns at IF/ID: %08lx", pcQueue[0], insQueue[0]);
   Serial.println(output);
-  sprintf(output, "PC at ID: %08lx\tIns at ID: %08lx", pcQueue[1], insQueue[0]);
+  sprintf(output, "PC at ID: %08lx\tIns at ID/EX: %08lx", pcQueue[1], insQueue[1]);
   Serial.println(output);
-  sprintf(output, "PC at EX: %08lx\tInst at EX: %08lx\tALU at EX: %08lx", pcQueue[2], insQueue[1], aluQueue[0]);
+  sprintf(output, "PC at EX: %08lx\tInst at EX/MEM: %08lx\tALU at EX: %08lx", pcQueue[2], insQueue[2], aluQueue[0]);
   Serial.println(output);
-  sprintf(output, "PC at MEM: %08lx\tInst at MEM: %08lx\tALU at MEM: %08lx", pcQueue[3], insQueue[2], aluQueue[1]);
+  sprintf(output, "PC at MEM: %08lx\tInst at MEM/WB: %08lx\tALU at MEM: %08lx", pcQueue[3], insQueue[3], aluQueue[1]);
   Serial.println(output);
-  sprintf(output, "PC at WB: %08lx\tInst at WB: %08lx\tALU at WB: %08lx", pcQueue[4], insQueue[3], aluQueue[2]);
+  sprintf(output, "PC at WB: %08lx\tInst at WB/tossed out: %08lx\tALU at WB: %08lx", pcQueue[4], insQueue[4], aluQueue[2]);
   Serial.println(output);
   Serial.println("<< DEBUGGING PART - END  >>\n");
 }
