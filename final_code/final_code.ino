@@ -53,7 +53,7 @@ long insQueue[5];
 long aluQueue[3];
 
 //Conditional Branching
-bool toBeq;
+bool ToBranchJump;
 bool toStall;
 int stallIndex;
 
@@ -61,7 +61,6 @@ int stallIndex;
 char operation[MAX_SUBLEN];
 
 //hazard and exception check;
-bool toBranchOrNot;
 int controlHazard;
 int dataHazard;
 int invalidInstruction;
@@ -105,12 +104,20 @@ void setup() {
   hasStartCommenced = false;
   hasClockCycle = false;
   hasServerInput = false;
-  toBeq = false;
+  ToBranchJump = false;
 
   //Debounce Variables
   currStartState = LOW;
   currClockState = LOW;
 
+
+  //hazards and exceptions
+  controlHazard = 0;
+  dataHazard = 0;
+  invalidInstruction = 0;
+  arithmeticOverflow = 0;
+
+  
   //OTHER SETUP
   memset(stringFromServer, 0, MAX_STRLEN);
   memset(stringToServer, 0 , MAX_STRLEN);
@@ -169,10 +176,10 @@ void loop() {
       //check if to branch or not to branch
       idBeqResolve();
       Serial.print("Finished checking for branch. ");
-      if(toBeq){
-        Serial.print("YES, It will branch");
+      if(ToBranchJump){
+        Serial.print("YES, It will branch on next clock cycle");
       }else{
-        Serial.print("NO, It wont branch");
+        Serial.print("NO, It wont branch on next clock cycle");
       }
       Serial.write(TERMINATOR);
       
@@ -186,6 +193,13 @@ void loop() {
     noBreadboardClock();
   } else if(hasClockCycle){
     digitalWrite(readyLED, LOW);
+
+    //reset hazards and exceptions
+    controlHazard = 0;
+    dataHazard = 0;
+    invalidInstruction = 0;
+    arithmeticOverflow = 0;
+
     movePipelineQueue();
     pcQueue[0] = getNextPc();    
     updatePipelineInput();
@@ -309,11 +323,11 @@ void movePipelineQueue() {
     pcQueue[j] = pcQueue[j - 1];
   }
 
-  for (j = 4; j > stallIndex-1 && j > 0; j--) {
+  for (j = 4; j > stallIndex && j > 0; j--) {
     insQueue[j] = insQueue[j - 1];
   }
   if(stallIndex > 0){
-    insQueue[stallIndex-1] = 0;
+    insQueue[stallIndex] = 0;
   }
   
   for (j = 2; j > stallIndex-2 && j > 0; j--) {
@@ -324,7 +338,7 @@ void movePipelineQueue() {
 }
 
 long getNextPc() {
-  if(stallIndex != 0){
+  if(stallIndex > 0){
     Serial.println("next PC is the same PC");
     return pcQueue[0];
   }
@@ -334,8 +348,8 @@ long getNextPc() {
   insIdentify(insQueue[2]);
   if (strcmp(operation, "j") == 0 ) {
     nextPc = (insQueue[2] && 0x3ffffff) << 2;
-    flushPipelineRegs("IF", "ID");
-  }else if (strcmp(operation, "beq") == 0 && toBeq) {    
+    flushIfId();
+  }else if (strcmp(operation, "beq") == 0 && ToBranchJump) {    
     nextPc = pcQueue[2] + 4;
     long imm = insQueue[2] & 0xffff;
     if(imm >> 15 == 1){      
@@ -344,12 +358,24 @@ long getNextPc() {
       nextPc += imm << 2;
     }
     
-    flushPipelineRegs("IF", "ID");
+    flushIfId();
   }
 
   return nextPc;
 }
 
+void flushIfId(){
+    insQueue[1] = 0;
+    controlHazard = 1;
+}
+
+
+void resetHazardsExceptions(){
+  controlHazard = 0;
+  dataHazard = 0;
+  invalidInstruction = 0;
+  arithmeticOverflow = 0;
+}
 //Call every clock cycle to move pipeline and update pipeline variables to input to server
 void updatePipelineInput() {
 
@@ -448,9 +474,9 @@ void insIdentify(long instruction) { //Identify the instruction type based on th
 }
 
 long getPossibleForwardedValue(char* reg, char* stage){
-  long rdMem;
-  long rdExWb;
-  long regIdEx;
+  long rdMem;//rd in MEM
+  long rdExWb;//rd in EX if stage is ID or WB if stage is EX
+  long rsRtIdEx;//rs or rt in ID if stage is ID or EX if stage is EX
   bool isMemHaveRd = false;
   bool isExWbHaveRd = false;
   bool isExHaveLw = false;
@@ -495,17 +521,23 @@ long getPossibleForwardedValue(char* reg, char* stage){
   }
 
   //get the appropriate rs or rt from ID or EX depending on i(stage) and j(shift value)
-  regIdEx = (insQueue[i/2] >> j) & 0x1f;
+  rsRtIdEx = (insQueue[i/2] >> j) & 0x1f;
 
   //initiate stalling if load-word hazard found in EX
-  if(isExHaveLw && regIdEx == rdExWb){
+  if(isExHaveLw && rsRtIdEx == rdExWb){//if EX has lw and (rsRt of ID) = (rd of EX)
       Serial.println("Let the stalling begin!");
       stallIndex = 2;
   }
 
-  if(isMemHaveRd && regIdEx == rdMem){//data hazard found in MEM
+  if(isMemHaveRd && rsRtIdEx == rdMem){//data hazard found in MEM
+    if(strcmp(stage, "EX") == 0){
+      dataHazard = 1;
+    }
     return aluQueue[1];
-  }else if(isExWbHaveRd && regIdEx == rdExWb){//data hazard found in EX or WB
+  }else if(isExWbHaveRd && rsRtIdEx == rdExWb){//data hazard found in EX or WB
+    if(strcmp(stage, "EX") == 0){
+      dataHazard = 1;
+    }
     return aluQueue[i-2];
   }else{        
     if(strcmp(reg, "rs") == 0){//no hazards found
@@ -567,9 +599,12 @@ void Execute() { //executes instructions
 void idBeqResolve(){
   long s;
   long t;
+  ToBranchJump = false;
   
   insIdentify(insQueue[1]);
-  if(strcmp(operation, "beq") == 0) {
+  if(strcmp(operation, "j") == 0){
+    ToBranchJump = true;
+  }else if(strcmp(operation, "beq") == 0) {
     
     //Check for hazards
     s = getPossibleForwardedValue("rs", "ID");
@@ -579,19 +614,9 @@ void idBeqResolve(){
     sprintf(output, "beq found in ID: s = %ld and t = %ld", s, t);
     Serial.println(output);
     if(s == t && stallIndex == 0) {
-      toBeq = true;
-    }else{
-      toBeq = false;
+      ToBranchJump = true;
     }
   }  
-}
-
-
-
-void flushPipelineRegs(char* from, char* to){
-  if(strcmp(from, "IF") == 0 && strcmp(to, "ID") == 0){
-    insQueue[1] = 0;
-  }
 }
 
 void debugPipelineQueues() {
