@@ -1,11 +1,12 @@
 /*test with:
     00400000
-    01294820 00000000 00000001 00000005
+    01294820 7fffffff 7fffffff 00000005
+    212afffe 7fffffff 7fffffff 00000005
     1252ffff 00000001 00000000 00000005
     01294820 00000002 00000002 00000005
 */
 //SIZE DEFINITIONS
-#define MAX_STRLEN 50
+#define MAX_STRLEN 70
 #define MAX_SUBLEN 9
 #define TERMINATOR '\n'
 #define DEBOUNCE_THRESHOLD 100
@@ -139,9 +140,9 @@ void setup() {
   aReadDataReg1Output = 0;
   bReadDataReg2Output = 0;
   cReadDataMemOutput = 0;
-  memset(insQueue, 0, 4);
-  memset(aluQueue, 0, 3);
-  memset(pcQueue, 0, 5);
+  memset(insQueue, 0, 5*sizeof(long));
+  memset(aluQueue, 0, 3*sizeof(long));
+  memset(pcQueue, 0, 5*sizeof(long));
 }
 
 void loop() {
@@ -162,12 +163,6 @@ void loop() {
   } else if (!hasServerInput) {
     if (Serial.available() > 0) { //get server input
       Serial.println("Server output received");
-      //get output of ALU
-      insIdentify(insQueue[2]);
-      Execute();
-      Serial.print("Finished executing ");
-      Serial.print(operation);
-      Serial.write(TERMINATOR);
 
       //get output of instruction mem, register file, data memM
       Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN);
@@ -175,17 +170,8 @@ void loop() {
 
       //check if to branch or not to branch
       idBeqResolve();
-      Serial.print("Finished checking for branch. ");
-      if(ToBranchJump){
-        Serial.print("YES, It will branch on next clock cycle");
-      }else{
-        Serial.print("NO, It wont branch on next clock cycle");
-      }
-      Serial.write(TERMINATOR);
+      debugIdBeqResolve();
       
-      //debugging
-      debugPipelineQueues();
-
       hasServerInput = true;
     }
   } else if (!hasClockCycle) {
@@ -204,11 +190,22 @@ void loop() {
     pcQueue[0] = getNextPc();    
     updatePipelineInput();
     printPipelineInput();
+    stallIndex = 0;
 
-    if(stallIndex != 0){
-      Serial.println("The stalling has ended");
-      stallIndex = 0;
+    insIdentify(insQueue[1]);
+    if(strcpy(operation, "invalid") == 0){
+      invalidInstruction = 0;
+      insQueue[1] = 0;
     }
+
+    //get output of ALU
+    insIdentify(insQueue[2]);
+    Execute();
+    debugExecute();
+
+    //debugging
+    debugPipelineQueues();
+    debugHazardsExceptions();
 
     
     lastTwoPcDigits();
@@ -217,20 +214,6 @@ void loop() {
     hasServerInput = false;
     hasClockCycle = false;
   }
-}
-
-void print5BitBinary(int num) {
-  int mult = 1;
-  int bcd = 0;
-  int i;
-  for (i = 0; i < 5; i++) {
-    bcd += (num % 2) * mult;
-    num /= 2;
-    mult *= 10;
-  }
-  char output[7];
-  sprintf(output, "%05d ", bcd);
-  Serial.print(output);
 }
 
 void lastTwoPcDigits(){//obtain last two PC digits of current instruction
@@ -326,14 +309,12 @@ void movePipelineQueue() {
   for (j = 4; j > stallIndex && j > 0; j--) {
     insQueue[j] = insQueue[j - 1];
   }
-  if(stallIndex > 0){
-    insQueue[stallIndex] = 0;
-  }
+  insQueue[stallIndex] = 0;
   
   for (j = 2; j > stallIndex-2 && j > 0; j--) {
     aluQueue[j] = aluQueue[j - 1];
   }
-
+  aluQueue[0] = 0;
   
 }
 
@@ -356,8 +337,7 @@ long getNextPc() {
       nextPc += (imm - 0x10000) << 2;
     }else{
       nextPc += imm << 2;
-    }
-    
+    }    
     flushIfId();
   }
 
@@ -412,6 +392,21 @@ void printPipelineInput() {
   Serial.write(TERMINATOR);
 }
 
+
+void print5BitBinary(int num) {
+  int mult = 1;
+  int bcd = 0;
+  int i;
+  for (i = 0; i < 5; i++) {
+    bcd += (num % 2) * mult;
+    num /= 2;
+    mult *= 10;
+  }
+  char output[7];
+  sprintf(output, "%05d ", bcd);
+  Serial.print(output);
+}
+
 //parses stores the server input variables
 void storeServerOutput() {
   char *token;
@@ -447,8 +442,11 @@ void insIdentify(long instruction) { //Identify the instruction type based on th
       } case 42: {
           strcpy(operation, "slt");
           break;
+      } case 0:{
+          strcpy(operation, "nop");
+          break;
       } default:
-        strcpy(operation, "r-nop");
+        strcpy(operation, "invalid");
     }
   } else if (opcode == 2) { //1 is J-type
     strcpy(operation, "j");
@@ -468,7 +466,7 @@ void insIdentify(long instruction) { //Identify the instruction type based on th
           strcpy(operation, "beq");
           break;
       } default:
-        strcpy(operation, "i-nop");
+        strcpy(operation, "invalid");
     }
   }
 }
@@ -509,7 +507,7 @@ long getPossibleForwardedValue(char* reg, char* stage){
       rdMem = (insQueue[3] >> 11) & 0x1f;
       isMemHaveRd = true;
       
-  }else if(strcmp(operation, "addi") == 0){
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw") == 0){
       rdMem = (insQueue[3] >> 16) & 0x1f;
       isMemHaveRd = true;
   }
@@ -559,8 +557,10 @@ void Execute() { //executes instructions
   s = aReadDataReg1Output;
   t = bReadDataReg2Output;
 
-  imm = iNewInstruction & 65535; //immediate
-  address = iNewInstruction & 67108863; //address
+  imm = insQueue[2] & 65535; //immediate
+  if(imm >> 15 == 1){      
+    imm = imm - 0x10000;
+  }
 
   s = getPossibleForwardedValue("rs", "EX");
   t = getPossibleForwardedValue("rt", "EX");  
@@ -569,9 +569,14 @@ void Execute() { //executes instructions
   insIdentify(insQueue[2]);
   if (strcmp(operation, "add") == 0) {
     aluQueue[0] = s + t;
-    //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
+    if(s >> 31 == t >> 31 && aluQueue[0] >> 31 != s >> 31){
+       arithmeticOverflow = 1;
+    }
   } else if (strcmp(operation, "sub") == 0) {
     aluQueue[0] = s - t;
+    if(s >> 31 != t >> 31 && aluQueue[0] >> 31 != s >> 31){
+       arithmeticOverflow = 1;
+    }
   } else if (strcmp(operation, "and") == 0) {
     aluQueue[0] = s & t;
   } else if (strcmp(operation, "or") == 0) {
@@ -584,7 +589,9 @@ void Execute() { //executes instructions
     }
   } else if (strcmp(operation, "addi") == 0) {
     aluQueue[0] = s + imm;
-    //aluResultEx = DDDDDDDD goes to d register that will be saved in CCCCC
+    if(s >> 31 == imm >> 31 && aluQueue[0] >> 31 != s >> 31){
+       arithmeticOverflow = 1;
+    }    
   } else if (strcmp(operation, "lw") == 0) {
 
   } else if (strcmp(operation, "sw") == 0) {
@@ -595,6 +602,7 @@ void Execute() { //executes instructions
 
   }
 }
+
 
 void idBeqResolve(){
   long s;
@@ -620,21 +628,51 @@ void idBeqResolve(){
 }
 
 void debugPipelineQueues() {
-  Serial.println("\n<< DEBUGGING PART - START  >>");
+  Serial.println("<< DEBUGGING PIPELINE QUEUES - START  >>");
   char output[MAX_STRLEN];
   sprintf(output, "PC at IF: %08lx\tIns at IF/ID: %08lx", pcQueue[0], insQueue[0]);
   Serial.println(output);
   sprintf(output, "PC at ID: %08lx\tIns at ID/EX: %08lx", pcQueue[1], insQueue[1]);
+  Serial.println(output);  
+  sprintf(output, "PC at EX: %08lx\tIns at EX/MEM: %08lx\tALU at EX: %08lx", pcQueue[2], insQueue[2], aluQueue[0]);
+  Serial.println(output);  
+  sprintf(output, "PC at MEM: %08lx\tIns at MEM/WB: %08lx\tALU at MEM: %08lx", pcQueue[3], insQueue[3], aluQueue[1]);
   Serial.println(output);
-  sprintf(output, "PC at EX: %08lx\tInst at EX/MEM: %08lx\tALU at EX: %08lx", pcQueue[2], insQueue[2], aluQueue[0]);
+  sprintf(output, "PC at WB: %08lx\tIns at WB/NIL: %08lx\tALU at WB: %08lx", pcQueue[4], insQueue[4], aluQueue[2]);
   Serial.println(output);
-  sprintf(output, "PC at MEM: %08lx\tInst at MEM/WB: %08lx\tALU at MEM: %08lx", pcQueue[3], insQueue[3], aluQueue[1]);
-  Serial.println(output);
-  sprintf(output, "PC at WB: %08lx\tInst at WB/tossed out: %08lx\tALU at WB: %08lx", pcQueue[4], insQueue[4], aluQueue[2]);
-  Serial.println(output);
-  Serial.println("<< DEBUGGING PART - END  >>\n");
+  Serial.println("<< DEBUGGING PIPELINE QUEUES - END  >>");
 }
 
+
+void debugExecute(){
+  Serial.print("<< FINISHED EXECUTING: ");
+  Serial.print(operation);
+  Serial.print(" >>");
+  Serial.write(TERMINATOR);
+}
+
+
+void debugIdBeqResolve(){
+  if(ToBranchJump){
+  Serial.print("<< YES, It will branch on next clock cycle >>");
+  }else{
+  Serial.print("<< NO, It wont branch on next clock cycle >>");
+  }  
+  Serial.write(TERMINATOR);
+}
+
+void debugHazardsExceptions(){
+  Serial.println("<< DEBUGGING HAZARDS AND EXCEPTIONS - START  >>");
+  Serial.print("Data hazard: ");
+  Serial.println(dataHazard);
+  Serial.print("Control hazard: ");
+  Serial.println(controlHazard);
+  Serial.print("invalid Instruction: ");
+  Serial.println(invalidInstruction);
+  Serial.print("Arithmetic Overflow: ");
+  Serial.println(arithmeticOverflow);
+  Serial.println("<< DEBUGGING HAZARDS AND EXCEPTIONS - END  >>");
+}
 void noBreadboardStart(){
   Serial.println("imagine the START switch was pressed at this moment");
   Serial.print("START");
