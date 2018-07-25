@@ -25,7 +25,6 @@ bool hasStartCommenced;
 bool hasServerInput;
 bool hasClockCycle;
 
-
 //string variables for input and output to server
 char stringFromServer[MAX_STRLEN];
 char stringToServer[MAX_STRLEN];
@@ -42,7 +41,6 @@ int hMemRead;
 int iMemWrite;
 
 //variables outputted by server
-long iNewInstruction;
 long aReadDataReg1Output;
 long bReadDataReg2Output;
 long cReadDataMemOutput;
@@ -50,22 +48,29 @@ long cReadDataMemOutput;
 //pipeline arrays
 long pcQueue[5];
 long insQueue[5];
-//int hazardQueue[4];
 long aluQueue[3];
 
 //Conditional Branching
 bool ToBranchJump;
-bool toStall;
+int toJumpOrBranch;//0 if none; 1 if jump; 2 if branch
 int stallIndex;
 
 //mutable strings for function returns
 char operation[MAX_SUBLEN];
 
+//forwarding
+int rtExHazardCase;
+int rsExHazardCase;
+int rtBeqHazardCase;
+int rsBeqHazardCase;
+int rtLwHazardCase;
+int rsLwHazardCase;
+
 //hazard and exception check;
-int controlHazard;
-int dataHazard;
-int invalidInstruction;
-int arithmeticOverflow;
+int hasControlHazard;
+int hasDataHazard;
+int hasInvalidInstruction;
+int hasArithmeticOverflow;
 
 //Debouncing
 long timeLastStartToggle;
@@ -105,7 +110,8 @@ void setup() {
   hasStartCommenced = false;
   hasClockCycle = false;
   hasServerInput = false;
-  ToBranchJump = false;
+  toJumpOrBranch = false;
+
 
   //Debounce Variables
   currStartState = LOW;
@@ -113,10 +119,10 @@ void setup() {
 
 
   //hazards and exceptions
-  controlHazard = 0;
-  dataHazard = 0;
-  invalidInstruction = 0;
-  arithmeticOverflow = 0;
+  hasControlHazard = 0;
+  hasDataHazard = 0;
+  hasInvalidInstruction = 0;
+  hasArithmeticOverflow = 0;
 
   
   //OTHER SETUP
@@ -136,7 +142,6 @@ void setup() {
   iMemWrite = 0;
 
   //FROM SERVER VARS
-  iNewInstruction = 0;
   aReadDataReg1Output = 0;
   bReadDataReg2Output = 0;
   cReadDataMemOutput = 0;
@@ -167,10 +172,6 @@ void loop() {
       //get output of instruction mem, register file, data memM
       Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN);
       storeServerOutput();
-
-      //check if to branch or not to branch
-      idBeqResolve();
-//     debugIdBeqResolve();
       
       hasServerInput = true;
     }
@@ -179,29 +180,55 @@ void loop() {
 //    noBreadboardClock();
   } else if(hasClockCycle){
     digitalWrite(readyLED, LOW);
-
+    
     //reset hazards and exceptions
-    controlHazard = 0;
-    dataHazard = 0;
-    invalidInstruction = 0;
-    arithmeticOverflow = 0;
+    hasControlHazard = 0;
+    hasDataHazard = 0;
+    hasInvalidInstruction = 0;
+    hasArithmeticOverflow = 0;
+
+     //reset forwarding values
+    rtExHazardCase = 0;
+    rsExHazardCase = 0;
+    rtBeqHazardCase = 0;
+    rsBeqHazardCase = 0;
+    rtLwHazardCase = 0;
+    rsLwHazardCase = 0;
 
     movePipelineQueue();
-    pcQueue[0] = getNextPc();    
-    updatePipelineInput();
-    printPipelineInput();
-    stallIndex = 0;
-
+    if(toJumpOrBranch > 0){
+      hasControlHazard = 1;
+    }
+    pcQueue[0] = getNextPc();//getNextPc will stall if stallIndex > 0     
+    
+    //check for invalid instruction exception
     insIdentify(insQueue[1]);
     if(strcpy(operation, "invalid") == 0){
-      invalidInstruction = 0;
+      hasInvalidInstruction = 0;
       insQueue[1] = 0;
     }
 
-    //get output of ALU
+    //check for data hazards
+    stallIndex = 0;
+    checkExHazards();
+    checkBeqHazards();
+    checkLwHazards();
+    if(rtLwHazardCase > 0 || rsLwHazardCase > 0){
+      stallIndex = 2;//activate stalling when lw hazard is found
+    }
+  
     insIdentify(insQueue[2]);
-    Execute();
-//    debugExecute();
+    aluExecute();
+    //debugaluExecute();
+
+    insIdentify(insQueue[1]);
+    toJumpOrBranch = 0;
+    idBeqResolve();
+//  debugIdBeqResolve();
+
+    
+    updatePipelineInput();
+    printPipelineInput();
 
     //debugging
 //    debugPipelineQueues();
@@ -211,6 +238,12 @@ void loop() {
     lastTwoPcDigits();
     outputBCD(pclast, 6);
     outputBCD(pcsecondlast, 10);
+
+    digitalWrite(dataHazardLED, hasDataHazard);
+    digitalWrite(controlHazardLED, hasControlHazard);
+    digitalWrite(invalidExceptionLED, hasInvalidInstruction);
+    digitalWrite(arithmeticExceptionLED, hasArithmeticOverflow);
+    
     hasServerInput = false;
     hasClockCycle = false;
   }
@@ -316,56 +349,59 @@ void movePipelineQueue() {
 
 long getNextPc() {
   if(stallIndex > 0){
-//    Serial.println("next PC is the same PC");
+    Serial.println("next PC is the same PC");
     return pcQueue[0];
   }
-  char output[MAX_STRLEN];
   long nextPc = pcQueue[0] + 4;
   
   insIdentify(insQueue[2]);
-  if (strcmp(operation, "j") == 0 ) {
+  if (toJumpOrBranch == 1) {
     nextPc = (insQueue[2] && 0x3ffffff) << 2;
-    flushIfId();
-  }else if (strcmp(operation, "beq") == 0 && ToBranchJump) {    
+    insQueue[1] = 0;
+  }else if(toJumpOrBranch == 2) {    
     nextPc = pcQueue[2] + 4;
     long imm = insQueue[2] & 0xffff;
     if(imm >> 15 == 1){      
       nextPc += (imm - 0x10000) << 2;
     }else{
       nextPc += imm << 2;
-    }    
-    flushIfId();
+    }
+    insQueue[1] = 0;   
   }
-
+  
   return nextPc;
 }
 
-void flushIfId(){
-    insQueue[1] = 0;
-    controlHazard = 1;
-}
 
 
 void resetHazardsExceptions(){
-  controlHazard = 0;
-  dataHazard = 0;
-  invalidInstruction = 0;
-  arithmeticOverflow = 0;
+  hasControlHazard = 0;
+  hasDataHazard = 0;
+  hasInvalidInstruction = 0;
+  hasArithmeticOverflow = 0;
 }
 //Call every clock cycle to move pipeline and update pipeline variables to input to server
 void updatePipelineInput() {
-
   aReadReg1Input = (insQueue[1] >> 21) & 0x1f;
   bReadReg2Input = (insQueue[1] >> 16) & 0x1f;
-  cWriteRegInput = (insQueue[1] >> 11) & 0x1f;
+
+
 
   insIdentify(insQueue[4]);
-  if (strcmp(operation, "lw") == 0 || strcmp(operation, "nop") == 0) {
+  if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+    cWriteRegInput = (insQueue[4] >> 16) & 0x1f;
+  }else{
+    cWriteRegInput = (insQueue[4] >> 11) & 0x1f;
+  }
+  
+  if (strcmp(operation, "lw") == 0) {
     dWriteDataReg = cReadDataMemOutput;
   } else {
     dWriteDataReg = aluQueue[2];
   }
+
   eRegWrite = strcmp(operation, "j") != 0 && strcmp(operation, "beq") != 0 && strcmp(operation, "sw") != 0 && strcmp(operation, "nop") != 0 && strcmp(operation, "invalid") != 0;
+
   fAddressMem = aluQueue[1];
   gWriteDataMem = insQueue[4] & 0xffff;
 
@@ -467,158 +503,275 @@ void insIdentify(long instruction) { //Identify the instruction type based on th
   }
 }
 
-long getPossibleForwardedValue(char* reg, char* stage){
+void checkExHazards(){
   long rdMem;//rd in MEM
-  long rdExWb;//rd in EX if stage is ID or WB if stage is EX
-  long rsRtIdEx;//rs or rt in ID if stage is ID or EX if stage is EX
+  long rdWb;//rd in EX
+  long rsEx;
+  long rtEx;
   bool isMemHaveRd = false;
-  bool isExWbHaveRd = false;
-  bool isExHaveLw = false;
+  bool isWbHaveRd = false;
+  bool isExHaveRead = false;
 
-  //set i, index for instruction to 1 or 3 depending on whether forwarding done on ID or EX such that values are looked for in EX or WB
-  int i = 2;
-  if(strcmp(stage, "EX") == 0){
-    i = 4;
-  }
-
-  //get rd from EX or WB depending on stage
-  insIdentify(insQueue[i]);
-  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") == 0|| strcmp(operation, "and") == 0 || strcmp(operation, "or") == 0 || strcmp(operation, "slt") == 0){
-      rdExWb = (insQueue[i] >> 11) & 0x1f;
-      isExWbHaveRd = true;
-      
-  }else if(strcmp(operation, "addi") == 0 ||  strcmp(operation, "lw") == 0){
-      rdExWb = (insQueue[i] >> 16) & 0x1f;
-      isExWbHaveRd = true;
-  }
-
-  //check if load word found in EX, by checking if stage trying to forward from is ID
-  if(strcmp(stage, "ID") == 0 && strcmp(operation, "lw") == 0){
-      isExHaveLw = true;
-  }
-
-  //get rd from MEM
+  //review instruction and rd in MEM
   insIdentify(insQueue[3]);
   if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") == 0|| strcmp(operation, "and") == 0 || strcmp(operation, "or") == 0 || strcmp(operation, "slt") == 0){
       rdMem = (insQueue[3] >> 11) & 0x1f;
       isMemHaveRd = true;
-      
+  }else if(strcmp(operation, "addi") == 0){
+      rdMem = (insQueue[3] >> 16) & 0x1f;
+      isMemHaveRd = true;
+  }
+
+  //review instruction and rd in WB
+  insIdentify(insQueue[4]);
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") == 0|| strcmp(operation, "and") == 0 || strcmp(operation, "or") == 0 || strcmp(operation, "slt") == 0){
+      rdWb = (insQueue[4] >> 11) & 0x1f;
+      isWbHaveRd = true;
+  }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw") == 0){
+      rdWb = (insQueue[4] >> 16) & 0x1f;
+      isWbHaveRd = true;
+  }
+
+  //review instruction rs and rt of EX
+  insIdentify(insQueue[2]);
+  if(strcmp(operation, "j") != 0 && strcmp(operation, "nop") != 0 && strcmp(operation, "invalid") != 0){
+    rsEx = (insQueue[2] >> 21) & 0x1f;
+    rtEx = (insQueue[2] >> 16) & 0x1f;
+    isExHaveRead = true;
+  }
+
+  if(isExHaveRead){
+    //check case 2 ex hazards first so that it can be overwritten by case 1
+    if(isWbHaveRd){
+      if(rsEx == rdWb){//data hazard found in in rsEx and rdMEM
+        rsExHazardCase = 2;
+        hasDataHazard = 1;
+      }
+      if(rtEx == rdWb){//data hazard found in in rtEX and rdMEM
+        rtExHazardCase = 2;
+        hasDataHazard = 1;
+      }
+    }  
+    //check case 1 ex hazards
+    if(isMemHaveRd){
+      if(rsEx == rdMem){//data hazard found in in rsEx and rdMEM
+        rsExHazardCase = 1;
+        hasDataHazard = 1;
+      }
+      if(rtEx == rdMem){//data hazard found in in rtEX and rdMEM
+        rtExHazardCase = 1;
+        hasDataHazard = 1;
+      }
+    }
+  }
+}//end of checkExHazards
+
+void checkBeqHazards(){
+  long rdEx;//rd in EX
+  long rdMem;//rd in MEM
+  long rsId;
+  long rtId;
+  bool isExHaveRd = false;
+  bool isMemHaveRd = false;
+  bool isIdHaveBeq = false;
+
+  //review instruction and rd in EX
+  insIdentify(insQueue[2]);
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") == 0|| strcmp(operation, "and") == 0 || strcmp(operation, "or") == 0 || strcmp(operation, "slt") == 0){
+      rdEx = (insQueue[2] >> 11) & 0x1f;
+      isExHaveRd = true;
+  }else if(strcmp(operation, "addi") == 0){
+      rdEx = (insQueue[2] >> 16) & 0x1f;
+      isExHaveRd = true;
+  }
+
+  //review instruction and rd in MEM
+  insIdentify(insQueue[3]);
+  if(strcmp(operation, "add") == 0 || strcmp(operation, "sub") == 0|| strcmp(operation, "and") == 0 || strcmp(operation, "or") == 0 || strcmp(operation, "slt") == 0){
+      rdMem = (insQueue[3] >> 11) & 0x1f;
+      isMemHaveRd = true;
   }else if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw") == 0){
       rdMem = (insQueue[3] >> 16) & 0x1f;
       isMemHaveRd = true;
   }
 
-  //set j shift value to 16 or 21 depending on whether we want rt or rs
-  int j = 16;
-  if(strcmp(reg, "rs") == 0){
-    j = 21;
+  //review instruction rs and rt of ID
+  insIdentify(insQueue[1]);
+  if(strcmp(operation, "beq") == 0){
+    rsId = (insQueue[1] >> 21) & 0x1f;
+    rtId = (insQueue[1] >> 16) & 0x1f;
+    isIdHaveBeq = true;
   }
 
-  //get the appropriate rs or rt from ID or EX depending on i(stage) and j(shift value)
-  rsRtIdEx = (insQueue[i/2] >> j) & 0x1f;
-
-  //initiate stalling if load-word hazard found in EX
-  if(isExHaveLw && rsRtIdEx == rdExWb){//if EX has lw and (rsRt of ID) = (rd of EX)
-//      Serial.println("Let the stalling begin!");
-      stallIndex = 2;
-  }
-
-  if(isMemHaveRd && rsRtIdEx == rdMem){//data hazard found in MEM
-    if(strcmp(stage, "EX") == 0){
-      dataHazard = 1;
+if(isIdHaveBeq){
+  //check case 2 hazards first so that it can be overwritten by case 1
+  if(isMemHaveRd){
+    if(rsId == rdMem){//data hazard found in in rsEx and rdMEM
+      rsBeqHazardCase = 2;
+      hasDataHazard = 1;
     }
-    return aluQueue[1];
-  }else if(isExWbHaveRd && rsRtIdEx == rdExWb){//data hazard found in EX or WB
-    if(strcmp(stage, "EX") == 0){
-      dataHazard = 1;
-    }
-    return aluQueue[i-2];
-  }else{        
-    if(strcmp(reg, "rs") == 0){//no hazards found
-      return aReadDataReg1Output;
-    }else{
-      return bReadDataReg2Output;
+    if(rtId == rdMem){//data hazard found in in rtEX and rdMEM
+      rtBeqHazardCase = 2;
+      hasDataHazard = 1;
     }
   }
-  
-}//end of getPossibleForwardedValue function
+  //check case 1 hazards
+  if(isExHaveRd){
+    if(rsId == rdEx){//data hazard found in in rsEx and rdMEM
+      rsBeqHazardCase = 1;
+      hasDataHazard = 1;
+    }
+    if(rtId == rdEx){//data hazard found in in rtEX and rdMEM
+      rtBeqHazardCase = 1;
+      hasDataHazard = 1;
+    }
+  }
+}
 
-void Execute() { //executes instructions
+}//end of checkBeqHazards
+
+void checkLwHazards(){
+  long rdEx;//rd in EX
+  long rdMem;//rd in MEM
+  long rsId;
+  long rtId;
+  bool isExHaveLw = false;
+  bool isMemHaveLw = false;
+  bool isIdHaveRead = false;
+
+  //review instruction and rd in EX
+  insIdentify(insQueue[2]);
+  if(strcmp(operation, "lw") == 0){
+      rdEx = (insQueue[2] >> 16) & 0x1f;
+      isExHaveLw = true;
+  }
+
+  //review instruction and rd in MEM
+  insIdentify(insQueue[3]);
+  if(strcmp(operation, "lw") == 0){
+      rdMem = (insQueue[3] >> 16) & 0x1f;
+      isMemHaveLw = true;
+  }
+
+  //review instruction rs and rt of Id
+  insIdentify(insQueue[1]);
+  if(strcmp(operation, "j") != 0 && strcmp(operation, "nop") != 0 && strcmp(operation, "invalid") != 0){
+    rsId = (insQueue[1] >> 21) & 0x1f;
+    rtId = (insQueue[1] >> 16) & 0x1f;
+    isIdHaveRead = true;
+  }
+
+  if(isIdHaveRead){
+    //check case 2 hazards first so that it can be overwritten by case 1
+    if(isMemHaveLw){
+      if(rsId == rdMem){//data hazard found in in rsEx and rdMEM
+        rsLwHazardCase = 2;
+        hasDataHazard = 1;
+      }
+      if(rtId == rdMem){//data hazard found in in rtEX and rdMEM
+        rtLwHazardCase = 2;
+        hasDataHazard = 1;
+      }
+    }  
+    //check case 1 hazards
+    if(isExHaveLw){
+      if(rsId == rdEx){//data hazard found in in rsEx and rdMEM
+        rsLwHazardCase = 1;
+        hasDataHazard = 1;
+      }
+      if(rtId == rdEx){//data hazard found in in rtEX and rdMEM
+        rtLwHazardCase = 1;
+        hasDataHazard = 1;
+      }
+    }
+  }
+}//end of checkLwHazards
+
+void aluExecute() { //executes instructions
   long s;
   long t;
 
   long imm;
   long address;
 
-  s = aReadDataReg1Output;
-  t = bReadDataReg2Output;
-
-  imm = insQueue[2] & 65535; //immediate
+  imm = insQueue[2] & 65535; 
+  //sign-extend the immediate
   if(imm >> 15 == 1){      
     imm = imm - 0x10000;
   }
 
-  s = getPossibleForwardedValue("rs", "EX");
-  t = getPossibleForwardedValue("rt", "EX");  
+  //get possible forwarded value of rs
+  if(rsExHazardCase == 2){
+    s = aluQueue[2];
+  }else if(rsExHazardCase == 1){
+    s = aluQueue[1];
+  }else{
+    s = aReadDataReg1Output;
+  }
+
+  //get possible forwarded value of rt
+  if(rtExHazardCase == 2){
+    t = aluQueue[2];
+  }else if(rtExHazardCase == 1){
+    t = aluQueue[1];
+  }else{
+    t = bReadDataReg2Output;
+  }
 
   //ALU Execution
   insIdentify(insQueue[2]);
   if (strcmp(operation, "add") == 0) {
     aluQueue[0] = s + t;
     if(s >> 31 == t >> 31 && aluQueue[0] >> 31 != s >> 31){
-       arithmeticOverflow = 1;
+       hasArithmeticOverflow = 1;
     }
   } else if (strcmp(operation, "sub") == 0) {
     aluQueue[0] = s - t;
     if(s >> 31 != t >> 31 && aluQueue[0] >> 31 != s >> 31){
-       arithmeticOverflow = 1;
+       hasArithmeticOverflow = 1;
     }
   } else if (strcmp(operation, "and") == 0) {
     aluQueue[0] = s & t;
   } else if (strcmp(operation, "or") == 0) {
     aluQueue[0] = s | t;
   } else if (strcmp(operation, "slt") == 0) {
-    if (s < t) {
-      aluQueue[0] = 1;
-    } else {
-      aluQueue[0] = 0;
-    }
+    aluQueue[0] = s < t;
   } else if (strcmp(operation, "addi") == 0) {
     aluQueue[0] = s + imm;
     if(s >> 31 == imm >> 31 && aluQueue[0] >> 31 != s >> 31){
-       arithmeticOverflow = 1;
+       hasArithmeticOverflow = 1;
     }    
-  } else if (strcmp(operation, "lw") == 0) {
-
-  } else if (strcmp(operation, "sw") == 0) {
-
-  } else if (strcmp(operation, "beq") == 0) {
-
-  } else if (strcmp(operation, "j") == 0) {
-
+  }else if (strcmp(operation, "sw") == 0 || strcmp(operation, "lw") == 0){
+    aluQueue[0] = s + imm;
   }
-}
-
+}//end of alualuExecute function
 
 void idBeqResolve(){
   long s;
   long t;
-  ToBranchJump = false;
   
   insIdentify(insQueue[1]);
-  if(strcmp(operation, "j") == 0){
-    ToBranchJump = true;
-  }else if(strcmp(operation, "beq") == 0) {
-    
-    //Check for hazards
-    s = getPossibleForwardedValue("rs", "ID");
-    t = getPossibleForwardedValue("rt", "ID");
-
-    char output[MAX_STRLEN];
-//    sprintf(output, "beq found in ID: s = %ld and t = %ld", s, t);
-    Serial.println(output);
+  if(strcmp(operation, "j") == 0){//jump if jump is read
+    toJumpOrBranch = 1;
+  }else if(strcmp(operation, "beq") == 0) {//branch if beq is read and rs == rt
+    //get possible forwarded value of rs
+    if(rsBeqHazardCase == 2){
+      s = aluQueue[1];
+    }else if(rsBeqHazardCase == 1){
+      s = aluQueue[0];
+    }else{
+      s = aReadDataReg1Output;
+    }  
+    //get possible forwarded value of rt
+    if(rtBeqHazardCase == 2){
+      t = aluQueue[1];
+    }else if(rtBeqHazardCase == 1){
+      t = aluQueue[0];
+    }else{
+      t = bReadDataReg2Output;
+    }
     if(s == t && stallIndex == 0) {
-      ToBranchJump = true;
+      toJumpOrBranch = 2;
     }
   }  
 }
@@ -660,13 +813,13 @@ void debugIdBeqResolve(){
 void debugHazardsExceptions(){
   Serial.println("<< DEBUGGING HAZARDS AND EXCEPTIONS - START  >>");
   Serial.print("Data hazard: ");
-  Serial.println(dataHazard);
+  Serial.println(hasDataHazard);
   Serial.print("Control hazard: ");
-  Serial.println(controlHazard);
+  Serial.println(hasControlHazard);
   Serial.print("invalid Instruction: ");
-  Serial.println(invalidInstruction);
+  Serial.println(hasInvalidInstruction);
   Serial.print("Arithmetic Overflow: ");
-  Serial.println(arithmeticOverflow);
+  Serial.println(hasArithmeticOverflow);
   Serial.println("<< DEBUGGING HAZARDS AND EXCEPTIONS - END  >>");
 }
 void noBreadboardStart(){
