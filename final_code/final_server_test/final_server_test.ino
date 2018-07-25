@@ -148,8 +148,8 @@ void setup() {
 void loop() {
   int i;
   if (!hasStartRequested) {
-    //debounceStartPoll();
-    noBreadboardStart();
+    debounceStartPoll();
+//    noBreadboardStart();
   } else if (!hasStartCommenced) {
     if (Serial.available() > 0) {
       Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN);
@@ -175,8 +175,8 @@ void loop() {
       hasServerInput = true;
     }
   } else if (!hasClockCycle) {
-    //debounceClockPoll();
-    noBreadboardClock();
+    debounceClockPoll();
+//    noBreadboardClock();
   } else if(hasClockCycle){
     digitalWrite(readyLED, LOW);
 
@@ -256,12 +256,10 @@ void debounceStartPoll() {
     Serial.print("START");
     Serial.write(TERMINATOR);
     hasStartRequested = true;
-    Serial.println("Debounced rising detected");
   }
 
   //check for falling edge
   if (currStartState == LOW && prevStartState == HIGH) {
-    Serial.println("Debounced falling detected");
   }
 
   prevStartState = currStartState;
@@ -288,12 +286,10 @@ void debounceClockPoll() {
   //check for rising edge
   if (currClockState == HIGH && prevClockState == LOW) {
     hasClockCycle = true;
-    Serial.println("Debounced rising detected");
   }
 
   //check for falling edge
   if (currClockState == LOW && prevClockState == HIGH) {
-    Serial.println("Debounced falling detected");
   }
 
   prevClockState = currClockState;
