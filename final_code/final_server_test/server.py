@@ -13,7 +13,7 @@ DEFAULT_ASM_FILENAME = "test.asm"
 
 DEFAULT_PORT_CHOICE = 2
 BAUDRATE = 9600
-LOGGING_LEVEL = logging.DEBUG  # Change this into logging.DEBUG to help with debugging
+LOGGING_LEVEL = logging.INFO  # Change this into logging.DEBUG to help with debugging
 MAX_ITERATIONS = 1e9
 
 # Modify this to set initial register values

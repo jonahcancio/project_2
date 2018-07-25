@@ -9,7 +9,7 @@
 #define MAX_STRLEN 70
 #define MAX_SUBLEN 9
 #define TERMINATOR '\0'
-#define DEBOUNCE_THRESHOLD 100
+#define DEBOUNCE_THRESHOLD 60
 //PIN DEFINITIONS
 #define startSwitch 4
 #define clockSwitch 5
@@ -24,6 +24,7 @@ bool hasStartRequested;
 bool hasStartCommenced;
 bool hasServerInput;
 bool hasClockCycle;
+bool hasRestartBaby;
 
 //string variables for input and output to server
 char stringFromServer[MAX_STRLEN];
@@ -110,6 +111,7 @@ void setup() {
   hasStartCommenced = false;
   hasClockCycle = false;
   hasServerInput = false;
+  hasRestartBaby = false;
   toJumpOrBranch = false;
 
 
@@ -152,7 +154,7 @@ void setup() {
 
 void loop() {
   int i;
-  if (!hasStartRequested) {
+  if (!hasStartRequested || hasRestartBaby) {
     debounceStartPoll();
 //    noBreadboardStart();
   } else if (!hasStartCommenced) {
@@ -172,20 +174,28 @@ void loop() {
       //get output of instruction mem, register file, data memM
       Serial.readStringUntil(TERMINATOR).toCharArray(stringFromServer, MAX_STRLEN);
       storeServerOutput();
+
+      //had to put beq resolving after server input since it needs aReadReg1 and bReadReg2
+      toJumpOrBranch = 0;
+      idBeqResolve();
+      //  debugIdBeqResolve();
       
       hasServerInput = true;
     }
   } else if (!hasClockCycle) {
     debounceClockPoll();
+    debounceStartPoll();
 //    noBreadboardClock();
   } else if(hasClockCycle){
     digitalWrite(readyLED, LOW);
     
+
+    movePipelineQueue();
+    pcQueue[0] = getNextPc();//getNextPc will stall if stallIndex > 0    
+
     //reset hazards and exceptions
     hasControlHazard = 0;
     hasDataHazard = 0;
-    hasInvalidInstruction = 0;
-    hasArithmeticOverflow = 0;
 
      //reset forwarding values
     rtExHazardCase = 0;
@@ -195,17 +205,22 @@ void loop() {
     rtLwHazardCase = 0;
     rsLwHazardCase = 0;
 
-    movePipelineQueue();
+    //will be true if jump or valid beq instruction has reached EX
     if(toJumpOrBranch > 0){
-      hasControlHazard = 1;
-    }
-    pcQueue[0] = getNextPc();//getNextPc will stall if stallIndex > 0     
+        hasControlHazard = 1;
+        //flush out ID/EX only
+        insQueue[1] = 0;
+    }  
     
     //check for invalid instruction exception
     insIdentify(insQueue[1]);
     if(strcpy(operation, "invalid") == 0){
-      hasInvalidInstruction = 0;
+      hasInvalidInstruction = 1;
+      //flush from IF/ID to ID/EX
+      insQueue[0] = 0;
       insQueue[1] = 0;
+      pcQueue[0] = 0;
+      pcQueue[1] = 0;
     }
 
     //check for data hazards
@@ -217,14 +232,17 @@ void loop() {
       stallIndex = 2;//activate stalling when lw hazard is found
     }
   
-    insIdentify(insQueue[2]);
     aluExecute();
-    //debugaluExecute();
-
-    insIdentify(insQueue[1]);
-    toJumpOrBranch = 0;
-    idBeqResolve();
-//  debugIdBeqResolve();
+    if(hasArithmeticOverflow){
+      //flush from IF/ID to EX/MEM
+      insQueue[0] = 0;
+      insQueue[1] = 0;
+      insQueue[2] = 0;
+      pcQueue[0] = 0;
+      pcQueue[1] = 0;
+      pcQueue[2] = 0;
+    }
+    //debugExecute();
 
     
     updatePipelineInput();
@@ -241,91 +259,12 @@ void loop() {
 
     digitalWrite(dataHazardLED, hasDataHazard);
     digitalWrite(controlHazardLED, hasControlHazard);
-    digitalWrite(invalidExceptionLED, hasInvalidInstruction);
     digitalWrite(arithmeticExceptionLED, hasArithmeticOverflow);
-    
+    digitalWrite(invalidExceptionLED, hasInvalidInstruction);
+  
     hasServerInput = false;
     hasClockCycle = false;
   }
-}
-
-void lastTwoPcDigits(){//obtain last two PC digits of current instruction
-  long pc;
-  pc = pcQueue[0];
-  pc = pc/4;
-  pclast = pc%10;
-  pc = pc/10;
-  pcsecondlast = pc%10;
-}
-
-void outputBCD(int num, int pin0) {
-  int i;
-  for (i = 0; i < 4; i++) {
-    digitalWrite(pin0 + i, num % 2);
-    num /= 2;
-  }
-}
-
-void debounceStartPoll() {
-  //if check if switch has been toggled and start debounce timer if haven't debounced yet
-  if (digitalRead(startSwitch) != currStartState && !isStartDebouncing) {
-    timeLastStartToggle = millis();
-    isStartDebouncing = true;
-  }
-
-  //restart debounce timer if fluctuation lasted too short
-  if (digitalRead(startSwitch) == currStartState) {
-    isStartDebouncing = false;
-  }
-
-  //check if debounce DEBOUNCE_THRESHOLD has been reached during debouncing
-  if (millis() - timeLastStartToggle > DEBOUNCE_THRESHOLD && isStartDebouncing) {
-    currStartState = !currStartState;
-    isStartDebouncing = false;
-  }
-
-  //check for rising edge
-  if (currStartState == HIGH && prevStartState == LOW) {
-    Serial.print("START");
-    Serial.write(TERMINATOR);
-    hasStartRequested = true;
-  }
-
-  //check for falling edge
-  if (currStartState == LOW && prevStartState == HIGH) {
-  }
-
-  prevStartState = currStartState;
-}
-
-void debounceClockPoll() {
-  //if check if switch has been toggled and start debounce timer if haven't debounced yet
-  if (digitalRead(clockSwitch) != currClockState && !isClockDebouncing) {
-    timeLastClockToggle = millis();
-    isClockDebouncing = true;
-  }
-
-  //restart debounce timer if fluctuation lasted too short
-  if (digitalRead(clockSwitch) == currClockState) {
-    isClockDebouncing = false;
-  }
-
-  //check if debounce DEBOUNCE_THRESHOLD has been reached during debouncing
-  if (millis() - timeLastClockToggle > DEBOUNCE_THRESHOLD && isClockDebouncing) {
-    currClockState = !currClockState;
-    isClockDebouncing = false;
-  }
-
-  //check for rising edge
-  if (currClockState == HIGH && prevClockState == LOW) {
-    hasClockCycle = true;
-  }
-
-  //check for falling edge
-  if (currClockState == LOW && prevClockState == HIGH) {
-  }
-
-  prevClockState = currClockState;
 }
 
 //move each instruction in the pipeline one stage to the right
@@ -349,16 +288,24 @@ void movePipelineQueue() {
 
 long getNextPc() {
   if(stallIndex > 0){
-    Serial.println("next PC is the same PC");
     return pcQueue[0];
   }
-  long nextPc = pcQueue[0] + 4;
+
+  if(hasArithmeticOverflow){
+    return 0x80020000;
+  }
+
+  if(hasInvalidInstruction){
+    return 0x80010000;
+  }
   
-  insIdentify(insQueue[2]);
+  long nextPc = pcQueue[0] + 4;  
+  
   if (toJumpOrBranch == 1) {
-    nextPc = (insQueue[2] && 0x3ffffff) << 2;
-    insQueue[1] = 0;
-  }else if(toJumpOrBranch == 2) {    
+    nextPc = (insQueue[2] & 0x03ffffff) << 2;
+  }
+  
+  if(toJumpOrBranch == 2) {    
     nextPc = pcQueue[2] + 4;
     long imm = insQueue[2] & 0xffff;
     if(imm >> 15 == 1){      
@@ -366,29 +313,19 @@ long getNextPc() {
     }else{
       nextPc += imm << 2;
     }
-    insQueue[1] = 0;   
   }
   
   return nextPc;
 }
 
-
-
-void resetHazardsExceptions(){
-  hasControlHazard = 0;
-  hasDataHazard = 0;
-  hasInvalidInstruction = 0;
-  hasArithmeticOverflow = 0;
-}
 //Call every clock cycle to move pipeline and update pipeline variables to input to server
 void updatePipelineInput() {
   aReadReg1Input = (insQueue[1] >> 21) & 0x1f;
   bReadReg2Input = (insQueue[1] >> 16) & 0x1f;
 
 
-
   insIdentify(insQueue[4]);
-  if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw")){
+  if(strcmp(operation, "addi") == 0 || strcmp(operation, "lw") == 0){
     cWriteRegInput = (insQueue[4] >> 16) & 0x1f;
   }else{
     cWriteRegInput = (insQueue[4] >> 11) & 0x1f;
@@ -717,7 +654,7 @@ void aluExecute() { //executes instructions
   }else{
     t = bReadDataReg2Output;
   }
-
+  char output[40];
   //ALU Execution
   insIdentify(insQueue[2]);
   if (strcmp(operation, "add") == 0) {
@@ -725,6 +662,9 @@ void aluExecute() { //executes instructions
     if(s >> 31 == t >> 31 && aluQueue[0] >> 31 != s >> 31){
        hasArithmeticOverflow = 1;
     }
+//    sprintf(output, "result of ADD: %08lx", aluQueue[0]);
+//    Serial.print(output);
+//    Serial.write(0);
   } else if (strcmp(operation, "sub") == 0) {
     aluQueue[0] = s - t;
     if(s >> 31 != t >> 31 && aluQueue[0] >> 31 != s >> 31){
@@ -741,9 +681,13 @@ void aluExecute() { //executes instructions
     if(s >> 31 == imm >> 31 && aluQueue[0] >> 31 != s >> 31){
        hasArithmeticOverflow = 1;
     }    
+//    sprintf(output, "result of ADDI: %08lx", aluQueue[0]);
+//    Serial.print(output);
+//    Serial.write(0);
   }else if (strcmp(operation, "sw") == 0 || strcmp(operation, "lw") == 0){
     aluQueue[0] = s + imm;
   }
+
 }//end of alualuExecute function
 
 void idBeqResolve(){
@@ -765,8 +709,12 @@ void idBeqResolve(){
     //get possible forwarded value of rt
     if(rtBeqHazardCase == 2){
       t = aluQueue[1];
+      Serial.print("Hello");
+      Serial.write(TERMINATOR);
     }else if(rtBeqHazardCase == 1){
       t = aluQueue[0];
+      Serial.print("Hi");
+      Serial.write(TERMINATOR);
     }else{
       t = bReadDataReg2Output;
     }
@@ -833,3 +781,98 @@ void noBreadboardClock(){
  // Serial.println("imagine the CLOCK switch was pressed at this moment");
   hasClockCycle = true;
 }
+
+void lastTwoPcDigits(){//obtain last two PC digits of current instruction
+  long pc;
+  pc = pcQueue[0];
+  pc = pc/4;
+  pclast = pc%10;
+  pc = pc/10;
+  pcsecondlast = pc%10;
+}
+
+void outputBCD(int num, int pin0) {
+  int i;
+  for (i = 0; i < 4; i++) {
+    digitalWrite(pin0 + i, num % 2);
+    num /= 2;
+  }
+}
+
+void debounceStartPoll() {
+  //if check if switch has been toggled and start debounce timer if haven't debounced yet
+  if (digitalRead(startSwitch) != currStartState && !isStartDebouncing) {
+    timeLastStartToggle = millis();
+    isStartDebouncing = true;
+  }
+
+  //restart debounce timer if fluctuation lasted too short
+  if (digitalRead(startSwitch) == currStartState) {
+    isStartDebouncing = false;
+  }
+
+  //check if debounce DEBOUNCE_THRESHOLD has been reached during debouncing
+  if (millis() - timeLastStartToggle > DEBOUNCE_THRESHOLD && isStartDebouncing) {
+    currStartState = !currStartState;
+    isStartDebouncing = false;
+  }
+
+  //check for rising edge
+  if (currStartState == HIGH && prevStartState == LOW) {
+    Serial.print("START");
+    Serial.write(TERMINATOR); 
+    hasStartRequested = true;
+    hasStartCommenced = false;
+    hasClockCycle = false;
+    hasServerInput = false;
+    hasRestartBaby = false;
+    toJumpOrBranch = false;
+
+    hasControlHazard = 0;
+    hasDataHazard = 0;
+    hasInvalidInstruction = 0;
+    hasArithmeticOverflow = 0;
+    digitalWrite(dataHazardLED, hasDataHazard);
+    digitalWrite(controlHazardLED, hasControlHazard);
+    digitalWrite(arithmeticExceptionLED, hasArithmeticOverflow);
+    digitalWrite(invalidExceptionLED, hasInvalidInstruction);
+   
+  }
+
+  //check for falling edge
+  if (currStartState == LOW && prevStartState == HIGH) {
+  }
+
+  prevStartState = currStartState;
+}
+
+void debounceClockPoll() {
+  //if check if switch has been toggled and start debounce timer if haven't debounced yet
+  if (digitalRead(clockSwitch) != currClockState && !isClockDebouncing) {
+    timeLastClockToggle = millis();
+    isClockDebouncing = true;
+  }
+
+  //restart debounce timer if fluctuation lasted too short
+  if (digitalRead(clockSwitch) == currClockState) {
+    isClockDebouncing = false;
+  }
+
+  //check if debounce DEBOUNCE_THRESHOLD has been reached during debouncing
+  if (millis() - timeLastClockToggle > DEBOUNCE_THRESHOLD && isClockDebouncing) {
+    currClockState = !currClockState;
+    isClockDebouncing = false;
+  }
+
+  //check for rising edge
+  if (currClockState == HIGH && prevClockState == LOW) {
+    hasClockCycle = true;
+  }
+
+  //check for falling edge
+  if (currClockState == LOW && prevClockState == HIGH) {
+  }
+
+  prevClockState = currClockState;
+}
+
